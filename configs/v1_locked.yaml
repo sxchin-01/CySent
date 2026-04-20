@@ -1,0 +1,39 @@
+name: CySent_v1_locked
+description: Locked baseline for reproducible RL experimentation.
+
+env:
+  max_steps: 150
+  n_envs: 4
+  register_openenv: true
+
+training:
+  timesteps: 100000
+  seed: 42
+
+ppo:
+  policy: MlpPolicy
+  learning_rate: 0.00025
+  n_steps: 512
+  batch_size: 256
+  gamma: 0.997
+  gae_lambda: 0.97
+  ent_coef: 0.003
+  clip_range: 0.20
+  vf_coef: 0.6
+  max_grad_norm: 0.5
+  target_kl: 0.03
+
+evaluation:
+  max_steps: 150
+  episodes: 50
+  seed: 42
+  same_episode_seeds: true
+  normalization: disabled
+
+scoring:
+  weights:
+    breach_rate: 0.35
+    uptime: 0.25
+    final_risk: 0.20
+    survival_turns: 0.10
+    episode_reward: 0.10

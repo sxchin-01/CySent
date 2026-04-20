@@ -5,6 +5,13 @@ from typing import Any, Dict, List, Optional
 from .risk import breach_rate, compute_network_risk, uptime_ratio
 
 
+def _find_asset(assets: List[Dict[str, Any]], name: str) -> Dict[str, Any]:
+    for asset in assets:
+        if asset["name"] == name:
+            return asset
+    raise ValueError(f"missing asset: {name}")
+
+
 def compute_reward(
     assets_prev: List[Dict[str, Any]],
     assets_curr: List[Dict[str, Any]],
@@ -24,8 +31,8 @@ def compute_reward(
     prev_breach = breach_rate(assets_prev)
     curr_breach = breach_rate(assets_curr)
 
-    # Dense objective terms that directly align with core mission outcomes.
-    risk_term = (prev_risk - curr_risk) * 10.0
+    # Keep dense risk incentive but avoid overly action-centric optimization.
+    risk_term = (prev_risk - curr_risk) * 12.0
     uptime_term = (curr_uptime - prev_uptime) * 6.0
     breach_term = (prev_breach - curr_breach) * 8.0
 
@@ -34,15 +41,83 @@ def compute_reward(
     cleaned = sum(1 for p, c in zip(assets_prev, assets_curr) if p["infected"] and (not c["infected"]))
     prevention_bonus = 0.45 if (not red_log.get("success", False)) and action_name != "do_nothing" else 0.0
 
-    reward = risk_term + uptime_term + breach_term + recovered * 0.9 + cleaned * 0.7 + prevention_bonus
+    reward = risk_term + uptime_term + breach_term + recovered * 0.9 + cleaned * 1.4 + prevention_bonus
 
     # Strong critical-asset incentives, with explicit finance protection focus.
     finance_prev = next(a for a in assets_prev if a["name"] == "Finance Database")
     finance_curr = next(a for a in assets_curr if a["name"] == "Finance Database")
+    auth_prev = _find_asset(assets_prev, "Auth Server")
+    auth_curr = _find_asset(assets_curr, "Auth Server")
+    red_success = bool(red_log.get("success", False))
+    attack_type = str(red_log.get("attack", ""))
+
     if (not finance_prev["compromised"]) and finance_curr["compromised"]:
         reward -= 2.0
     if finance_prev["infected"] and (not finance_curr["infected"]):
         reward += 0.6
+
+    # Keep action nudges small; outcomes should dominate.
+    if action_name == "patch_auth_server" and auth_prev["patch_level"] < 0.75 and (not auth_prev["compromised"]):
+        reward += 1.3
+    if action_name == "rotate_credentials" and attack_type in {"phishing_email", "password_spray", "credential_theft"}:
+        reward += 1.8
+    if action_name == "segment_finance_database" and (not bool(ctx.get("segmented_finance", False))) and (not finance_prev["compromised"]):
+        reward += 1.8
+    if action_name == "investigate_top_alert" and (red_success or any(a["infected"] or a["compromised"] for a in assets_prev)):
+        reward += 0.8
+
+    # Outcome-dominant rewards.
+    if (not red_success) and attack_type == "credential_theft":
+        reward += 3.8
+    if (not red_success) and attack_type in {"privilege_escalation", "lateral_movement"}:
+        reward += 3.0
+    if (not red_success) and attack_type == "phishing_email":
+        reward += 2.0
+    if (not finance_curr["compromised"]) and attack_type in {"lateral_movement", "data_exfiltration", "ransomware_attempt"}:
+        reward += 2.4
+    risk_delta = prev_risk - curr_risk
+    if risk_delta > 0.05:
+        reward += 2.5
+
+    # Small threat-neglect penalties (-2 to -8 range).
+    if red_success and attack_type == "credential_theft":
+        reward -= 5.0
+
+    # Late-episode posture debt on critical systems.
+    if bool(ctx.get("truncated", False)):
+        if auth_curr["patch_level"] < 0.60:
+            reward -= 3.0
+        if (finance_curr["patch_level"] < 0.62) and (not bool(ctx.get("segmented_finance", False))):
+            reward -= 3.0
+
+    response_actions = {
+        "patch_auth_server",
+        "patch_web_server",
+        "rotate_credentials",
+        "segment_finance_database",
+        "investigate_top_alert",
+        "isolate_suspicious_host",
+        "restore_backup",
+    }
+    high_severity_attacks = {"credential_theft", "privilege_escalation", "lateral_movement", "ransomware_attempt", "data_exfiltration"}
+    if red_success and attack_type in high_severity_attacks and action_name not in response_actions:
+        reward -= 4.0
+
+    # Action-quality penalties for unjustified proactive moves.
+    credential_threat = attack_type in {"phishing_email", "password_spray", "credential_theft"}
+    credential_exposure_prev = sum(float(a["credential_risk"]) for a in assets_prev) / max(len(assets_prev), 1)
+    if action_name == "rotate_credentials" and (not credential_threat) and credential_exposure_prev < 0.42:
+        reward -= 1.8
+    if action_name == "segment_finance_database" and bool(ctx.get("segmented_finance", False)):
+        reward -= 2.2
+    web_prev = _find_asset(assets_prev, "Web Server")
+    if action_name == "patch_auth_server" and auth_prev["patch_level"] > 0.82 and (not auth_prev["infected"]) and (not auth_prev["compromised"]):
+        reward -= 1.6
+    if action_name == "patch_web_server" and web_prev["patch_level"] > 0.82 and (not web_prev["infected"]) and (not web_prev["compromised"]):
+        reward -= 1.6
+    unresolved_alert = red_success or any(a["infected"] or a["compromised"] for a in assets_prev)
+    if action_name == "investigate_top_alert" and (not unresolved_alert):
+        reward -= 1.5
 
     # Action economy and anti-reward-hacking controls.
     reward -= action_cost
@@ -50,6 +125,17 @@ def compute_reward(
     previous_action = str(ctx.get("previous_action", ""))
     if previous_action == action_name and curr_risk >= prev_risk:
         reward -= 0.18
+
+    # Repetition cooldown: small escalating penalties for repeated low-value actions.
+    low_value_actions = {"do_nothing", "increase_monitoring", "phishing_training", "deploy_honeypot"}
+    threat_exists = any(a["infected"] or a["compromised"] for a in assets_curr)
+    if previous_action == action_name and action_name in low_value_actions and threat_exists:
+        repeat_penalty = 1.0
+        if curr_risk >= prev_risk:
+            repeat_penalty += 1.0
+        if red_success:
+            repeat_penalty += 1.0
+        reward -= repeat_penalty
 
     action_was_wasteful = False
     if action_name == "restore_backup":
@@ -61,12 +147,12 @@ def compute_reward(
         action_was_wasteful = not had_incident
 
     if action_was_wasteful:
-        reward -= 0.35
+        reward -= 1.6
 
     if action_name == "do_nothing" and (
         curr_risk > 0.33 or red_log.get("success", False) or any(a["infected"] for a in assets_curr)
     ):
-        reward -= 0.55
+        reward -= 3.5
 
     # Hard negative outcomes and neglect penalties.
     compromised_assets = sum(1 for a in assets_curr if a["compromised"])

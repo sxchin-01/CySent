@@ -92,15 +92,15 @@ def compute_risk_breakdown(
         ignored_alert_pressure = 1.0
 
     network_risk = clamp(
-        0.45 * asset_exposure
+        0.41 * asset_exposure
         + 0.12 * compromised_hosts
         + 0.08 * infected_hosts
-        + 0.08 * patch_debt
-        + 0.07 * credential_exposure
+        + 0.10 * patch_debt
+        + 0.09 * credential_exposure
         + 0.06 * monitoring_weakness
         + 0.05 * ransomware_spread
-        + 0.05 * segmentation_gap
-        + 0.04 * ignored_alert_pressure,
+        + 0.06 * segmentation_gap
+        + 0.03 * ignored_alert_pressure,
         0.0,
         1.0,
     )

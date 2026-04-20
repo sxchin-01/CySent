@@ -39,47 +39,58 @@ CySent is a reinforcement learning cybersecurity simulation platform where:
 ## Backend Quick Start
 
 ```bash
-cd backend
 python -m venv .venv
 . .venv/Scripts/activate
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r backend/requirements.txt
 ```
 
 Run API:
 
 ```bash
-cd ..
-uvicorn backend.api.main:app --reload
+python -m uvicorn backend.api.main:app --reload
 ```
 
 Train PPO:
 
 ```bash
-python -m backend.train.train_ppo --timesteps 100000 --model-path backend/train/artifacts/cysent_ppo
+.venv/Scripts/python.exe -m backend.train.train_ppo --timesteps 100000 --model-path backend/train/artifacts/cysent_ppo
 ```
 
 Train tuned PPO with 4 envs and tracking:
 
 ```bash
-python -m backend.train.train_ppo --timesteps 200000 --model-path backend/train/artifacts/cysent_ppo_tuned --n-envs 4
+.venv/Scripts/python.exe -m backend.train.train_ppo --timesteps 200000 --model-path backend/train/artifacts/cysent_ppo_tuned --n-envs 4
+```
+
+Windows stable launcher (always uses root `.venv`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\train_ppo.ps1
 ```
 
 Open TensorBoard:
 
 ```bash
-tensorboard --logdir backend/train/artifacts/runs
+.venv/Scripts/tensorboard.exe --logdir backend/train/artifacts/runs --port 6006
+```
+
+Windows TensorBoard launcher:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start_tensorboard.ps1 -Port 6006
 ```
 
 Evaluate trained vs random policy:
 
 ```bash
-python -m backend.train.evaluate --model-path backend/train/artifacts/cysent_ppo.zip --episodes 50
+.venv/Scripts/python.exe -m backend.train.evaluate --model-path backend/train/artifacts/cysent_ppo.zip --episodes 50
 ```
 
 Run benchmark mode (random vs baseline vs tuned vs cloud-ready slot):
 
 ```bash
-python -m backend.train.benchmark --episodes 50 --baseline-model backend/train/artifacts/cysent_ppo.zip --tuned-model backend/train/artifacts/best_model/best_model.zip
+.venv/Scripts/python.exe -m backend.train.benchmark --episodes 50 --baseline-model backend/train/artifacts/cysent_ppo.zip --tuned-model backend/train/artifacts/best_model/best_model.zip
 ```
 
 Benchmark outputs JSON and charts into `backend/train/artifacts/`.
