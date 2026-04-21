@@ -1,0 +1,11 @@
+.git
+.venv
+.vscode
+frontend/node_modules
+frontend/.next
+backend/train/artifacts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env

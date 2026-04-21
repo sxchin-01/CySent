@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.agents import AgentRouter
@@ -211,6 +212,15 @@ def get_replay(episode_id: str) -> ReplayResponse:
     return ReplayResponse(episode_id=episode_id, events=runtime.replays[episode_id])
 
 
+@app.get("/replay/{episode_id}/export")
+def export_replay(episode_id: str) -> JSONResponse:
+    if episode_id not in runtime.replays:
+        raise HTTPException(status_code=404, detail="episode replay not found")
+    payload = {"episode_id": episode_id, "events": runtime.replays[episode_id]}
+    headers = {"Content-Disposition": f'attachment; filename="replay_{episode_id}.json"'}
+    return JSONResponse(content=payload, headers=headers)
+
+
 @app.post("/train")
 def start_training(req: TrainRequest) -> Dict[str, Any]:
     if runtime.training["running"]:
@@ -268,3 +278,18 @@ def run_benchmark(req: BenchmarkRequest) -> Dict[str, Any]:
     )
     runtime.training["benchmark"] = result
     return result
+
+
+@app.get("/benchmark/export")
+def export_benchmark(format: str = "json") -> FileResponse:
+    fmt = format.lower()
+    if fmt not in {"json", "csv"}:
+        raise HTTPException(status_code=400, detail="format must be one of: json, csv")
+
+    filename = "benchmark_table.json" if fmt == "json" else "benchmark_table.csv"
+    path = Path("backend/train/artifacts/benchmark") / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"benchmark export not found: {filename}")
+
+    media_type = "application/json" if fmt == "json" else "text/csv"
+    return FileResponse(path=path, media_type=media_type, filename=filename)

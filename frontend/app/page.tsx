@@ -46,6 +46,8 @@ export default function HomePage() {
 
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [booting, setBooting] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [incidents, setIncidents] = useState<string[]>([]);
   const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
   const [frames, setFrames] = useState<TimelineFrame[]>([]);
@@ -67,19 +69,26 @@ export default function HomePage() {
 
   useEffect(() => {
     const boot = async () => {
-      const live = await fetchState();
-      setState(live);
-      stateRef.current = live;
-      setTimeline([
-        {
-          turn: live.step,
-          reward: 0,
-          risk: live.network_risk,
-          uptime: uptimeFromAssets(live.assets),
-          breaches: breachesFromAssets(live.assets),
-          securityScore: securityScore(live.network_risk),
-        },
-      ]);
+      try {
+        setErrorMessage(null);
+        const live = await fetchState();
+        setState(live);
+        stateRef.current = live;
+        setTimeline([
+          {
+            turn: live.step,
+            reward: 0,
+            risk: live.network_risk,
+            uptime: uptimeFromAssets(live.assets),
+            breaches: breachesFromAssets(live.assets),
+            securityScore: securityScore(live.network_risk),
+          },
+        ]);
+      } catch (err) {
+        setErrorMessage(err instanceof Error ? err.message : "Unable to load backend state.");
+      } finally {
+        setBooting(false);
+      }
     };
     void boot();
   }, []);
@@ -129,6 +138,7 @@ export default function HomePage() {
     if (busy) return;
     setBusy(true);
     try {
+      setErrorMessage(null);
       const result = await step();
       const prev = stateRef.current;
       const resolvedState: EnvState = {
@@ -175,6 +185,9 @@ export default function HomePage() {
       if (result.terminated || result.truncated) {
         setRunning(false);
       }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Step request failed.");
+      setRunning(false);
     } finally {
       setBusy(false);
     }
@@ -183,30 +196,35 @@ export default function HomePage() {
   const handleReset = async () => {
     setRunning(false);
     setReplayPlaying(false);
-    const synced = await resetSimulation({
-      seed: 42,
-      scenario,
-      difficulty,
-      attacker,
-      strategy_mode: strategyMode,
-      action_source: actionSource,
-      intelligence_enabled: true,
-    });
-    setState(synced);
-    stateRef.current = synced;
-    setIncidents([]);
-    setTimeline([
-      {
-        turn: synced.step,
-        reward: 0,
-        risk: synced.network_risk,
-        uptime: uptimeFromAssets(synced.assets),
-        breaches: breachesFromAssets(synced.assets),
-        securityScore: securityScore(synced.network_risk),
-      },
-    ]);
-    setFrames([]);
-    setReplayIndex(0);
+    try {
+      setErrorMessage(null);
+      const synced = await resetSimulation({
+        seed: 42,
+        scenario,
+        difficulty,
+        attacker,
+        strategy_mode: strategyMode,
+        action_source: actionSource,
+        intelligence_enabled: true,
+      });
+      setState(synced);
+      stateRef.current = synced;
+      setIncidents([]);
+      setTimeline([
+        {
+          turn: synced.step,
+          reward: 0,
+          risk: synced.network_risk,
+          uptime: uptimeFromAssets(synced.assets),
+          breaches: breachesFromAssets(synced.assets),
+          securityScore: securityScore(synced.network_risk),
+        },
+      ]);
+      setFrames([]);
+      setReplayIndex(0);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Reset request failed.");
+    }
   };
 
   const handleStartPause = async () => {
@@ -215,31 +233,36 @@ export default function HomePage() {
       return;
     }
 
-    const synced = await resetSimulation({
-      seed: 42,
-      scenario,
-      difficulty,
-      attacker,
-      strategy_mode: strategyMode,
-      action_source: actionSource,
-      intelligence_enabled: true,
-    });
-    setState(synced);
-    stateRef.current = synced;
-    setIncidents([]);
-    setTimeline([
-      {
-        turn: synced.step,
-        reward: 0,
-        risk: synced.network_risk,
-        uptime: uptimeFromAssets(synced.assets),
-        breaches: breachesFromAssets(synced.assets),
-        securityScore: securityScore(synced.network_risk),
-      },
-    ]);
-    setFrames([]);
-    setReplayIndex(0);
-    setRunning(true);
+    try {
+      setErrorMessage(null);
+      const synced = await resetSimulation({
+        seed: 42,
+        scenario,
+        difficulty,
+        attacker,
+        strategy_mode: strategyMode,
+        action_source: actionSource,
+        intelligence_enabled: true,
+      });
+      setState(synced);
+      stateRef.current = synced;
+      setIncidents([]);
+      setTimeline([
+        {
+          turn: synced.step,
+          reward: 0,
+          risk: synced.network_risk,
+          uptime: uptimeFromAssets(synced.assets),
+          breaches: breachesFromAssets(synced.assets),
+          securityScore: securityScore(synced.network_risk),
+        },
+      ]);
+      setFrames([]);
+      setReplayIndex(0);
+      setRunning(true);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Unable to start simulation.");
+    }
   };
 
   const themeClass = themeByScenario[scenario] ?? themeByScenario.bank;
@@ -271,6 +294,18 @@ export default function HomePage() {
           onStartPause={() => void handleStartPause()}
           onReset={() => void handleReset()}
         />
+
+        {booting ? (
+          <div className="rounded-2xl border border-cyan-200/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">
+            Connecting to CySent backend...
+          </div>
+        ) : null}
+
+        {errorMessage ? (
+          <div className="rounded-2xl border border-rose-300/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+            {errorMessage}
+          </div>
+        ) : null}
 
         <motion.section
           initial={{ opacity: 0, y: 14 }}
@@ -304,6 +339,12 @@ export default function HomePage() {
                 redTarget={String(activeState.red_log?.target ?? "")}
                 underAttack={underAttack}
               />
+
+              {activeState.assets.length === 0 ? (
+                <p className="mt-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">
+                  No asset state available yet. Reset or Start to initialize the simulation feed.
+                </p>
+              ) : null}
             </article>
           </motion.section>
 

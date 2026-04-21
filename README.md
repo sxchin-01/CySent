@@ -1,136 +1,163 @@
 # CySent
 
-AI Security Operations Commander
+Autonomous Cyber Defense Command Center
 
-CySent is a reinforcement learning cybersecurity simulation platform where:
+CySent is a cybersecurity simulation and decision platform where:
+1. RED models adaptive attackers using threat profiles, chains, and pressure signals.
+2. BLUE defends with a stable PPO policy by default.
+3. BLUE can optionally use Hugging Face LLM decision support with PPO fallback.
 
-- RED is a dynamic threat engine (rules, probabilities, attack chains)
-- BLUE is an RL policy agent (PPO) that learns enterprise defense strategy
+## Core Features
 
-## Project Layout
+1. Real-time defense simulation with incident timeline and risk telemetry.
+2. PPO-first decision path for stable baseline behavior.
+3. Optional HF-assisted defense path with hybrid credit-saving mode.
+4. Benchmark and evaluation pipeline with JSON and CSV artifacts.
+5. Replay and benchmark export endpoints for submission evidence.
 
-- `backend/env`: Gymnasium-compatible environment, risk, reward, and threat logic
-- `backend/train`: PPO training and evaluation scripts
-- `backend/api`: FastAPI service exposing environment and training APIs
-- `frontend`: Next.js dashboard with live network graph and telemetry
-- `notebooks`: notebooks for experimentation (optional)
+## Architecture
 
-## Tech Stack
+1. Backend API: FastAPI runtime and orchestration.
+2. Environment: Gymnasium-compatible cyber defense environment.
+3. Threat Engine: adaptive attacker strategy and pressure dynamics.
+4. Agents:
+	- `ppo_agent` (default)
+	- `hf_llm_agent` (optional)
+5. Frontend: Next.js command dashboard and live visualization.
 
-### Backend
+Primary paths:
+1. Environment and threat logic: `backend/env/`
+2. Agents and routing: `backend/agents/`
+3. API service: `backend/api/main.py`
+4. Training and benchmark: `backend/train/`
+5. Frontend app: `frontend/`
 
-- Python 3.10+
-- OpenEnv (optional runtime registration)
-- Gymnasium
-- Stable-Baselines3 (PPO)
-- PyTorch
-- FastAPI
+## Quick Start
 
-### Frontend
+### 1) Install
 
-- Next.js App Router
-- React + TypeScript
-- TailwindCSS
-- Framer Motion
-- Recharts
-- Cytoscape.js
-- shadcn-style UI primitives
+Windows PowerShell:
 
-## Backend Quick Start
-
-```bash
+```powershell
 python -m venv .venv
-. .venv/Scripts/activate
+.\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r backend/requirements.txt
+npm --prefix frontend install
 ```
 
-Run API:
+Linux/macOS:
 
 ```bash
-python -m uvicorn backend.api.main:app --reload
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r backend/requirements.txt
+npm --prefix frontend install
 ```
+
+### 2) Configure env
+
+Create local `.env` from `.env.example` and set values for your machine.
+
+Important variables:
+1. `HF_TOKEN`
+2. `HF_MODEL_ID`
+3. `HF_ENDPOINT_URL`
+4. `HF_TIMEOUT`
+5. `AGENT_MODE` (`hybrid`, `full_llm`, `ppo_only`)
+6. `HYBRID_THRESHOLD`
+
+### 3) Run backend + frontend
+
+One-command scripts:
+1. Windows: `scripts/run_dev.ps1` or `scripts/run_dev.cmd`
+2. Linux/macOS: `scripts/run_dev.sh`
+
+Manual run:
+
+```bash
+python -m uvicorn backend.api.main:app --host 127.0.0.1 --port 8000 --reload
+npm --prefix frontend run dev -- --hostname 127.0.0.1 --port 3000
+```
+
+Open:
+1. Frontend: `http://127.0.0.1:3000`
+2. API docs: `http://127.0.0.1:8000/docs`
+
+## PPO vs HF Modes
+
+Supported BLUE sources:
+1. `ppo_agent` (default)
+2. `hf_llm_agent`
+
+Routing behavior:
+1. PPO remains default and production-safe baseline.
+2. HF can run full-time or hybrid mode (high risk or every N turns).
+3. If HF fails or times out, router falls back to PPO.
+
+## Training, Evaluation, Benchmark
 
 Train PPO:
 
 ```bash
-.venv/Scripts/python.exe -m backend.train.train_ppo --timesteps 100000 --model-path backend/train/artifacts/cysent_ppo
+python -m backend.train.train_ppo --timesteps 100000 --model-path backend/train/artifacts/cysent_ppo
 ```
 
-Train tuned PPO with 4 envs and tracking:
+Evaluate PPO:
 
 ```bash
-.venv/Scripts/python.exe -m backend.train.train_ppo --timesteps 200000 --model-path backend/train/artifacts/cysent_ppo_tuned --n-envs 4
+python -m backend.train.evaluate --episodes 50 --max-steps 150 --model-path backend/train/artifacts/best_model/best_model.zip --output backend/train/artifacts/eval_summary.json
 ```
 
-Windows stable launcher (always uses root `.venv`):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\train_ppo.ps1
-```
-
-Open TensorBoard:
+Benchmark leaderboard:
 
 ```bash
-.venv/Scripts/tensorboard.exe --logdir backend/train/artifacts/runs --port 6006
+python -m backend.train.benchmark --episodes 50 --seeds 20 --stress default --agents ppo hf_llm random
 ```
 
-Windows TensorBoard launcher:
+Artifacts:
+1. `backend/train/artifacts/benchmark/benchmark_summary.json`
+2. `backend/train/artifacts/benchmark/benchmark_table.csv`
+3. `backend/train/artifacts/benchmark/benchmark_table.json`
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start_tensorboard.ps1 -Port 6006
-```
+## Export Endpoints
 
-Evaluate trained vs random policy:
+1. Replay JSON download: `GET /replay/{episode_id}/export`
+2. Benchmark JSON: `GET /benchmark/export?format=json`
+3. Benchmark CSV: `GET /benchmark/export?format=csv`
+
+## Demo Flow
+
+Use these guides:
+1. `docs/demo-flow.md`
+2. `docs/pitch-2min.md`
+
+Recommended screenshot folder:
+1. `assets/screenshots/`
+
+## Deployment
+
+Local Docker deployment:
 
 ```bash
-.venv/Scripts/python.exe -m backend.train.evaluate --model-path backend/train/artifacts/cysent_ppo.zip --episodes 50
+docker compose up --build
 ```
 
-Run benchmark mode (random vs baseline vs tuned vs cloud-ready slot):
+Included files:
+1. `Dockerfile.backend`
+2. `Dockerfile.frontend`
+3. `docker-compose.yml`
 
-```bash
-.venv/Scripts/python.exe -m backend.train.benchmark --episodes 50 --baseline-model backend/train/artifacts/cysent_ppo.zip --tuned-model backend/train/artifacts/best_model/best_model.zip
-```
+Hugging Face Spaces (Docker):
+1. `hf_spaces/Dockerfile`
+2. `hf_spaces/start.sh`
+3. `hf_spaces/README.md`
 
-Benchmark outputs JSON and charts into `backend/train/artifacts/`.
+## Branding
 
-## API Endpoints
+Product name: CySent
 
-- `GET /state`
-- `POST /step`
-- `GET /metrics`
-- `GET /training-status`
-- `GET /replay/{episode_id}`
-- `POST /train`
-- `POST /benchmark`
+Tagline: Autonomous Cyber Defense Command Center
 
-## Frontend Quick Start
-
-```bash
-cd frontend
-npm install
-set NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
-npm run dev
-```
-
-Open `http://localhost:3000`.
-
-## Action Space
-
-- `0` do_nothing
-- `1` patch_hr_systems
-- `2` patch_web_server
-- `3` patch_auth_server
-- `4` rotate_credentials
-- `5` isolate_suspicious_host
-- `6` increase_monitoring
-- `7` restore_backup
-- `8` deploy_honeypot
-- `9` phishing_training
-- `10` investigate_top_alert
-- `11` segment_finance_database
-
-## Notes on OpenEnv
-
-The environment is implemented as a Gymnasium environment and includes optional OpenEnv registration through `maybe_register_openenv_env()`. If OpenEnv is installed and provides a `register` API, the environment registers as `CySentSecurity-v0`.
+Visual language: deep slate/cyan command interface with incident-first telemetry.
