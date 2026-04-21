@@ -1,4 +1,4 @@
-import { EnvState, StepResult } from "@/types";
+import { EnvState, StepResult } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
@@ -8,13 +8,35 @@ export async function fetchState(): Promise<EnvState> {
   return res.json();
 }
 
-export async function step(action: number): Promise<StepResult> {
+export async function step(): Promise<StepResult> {
   const res = await fetch(`${API_BASE}/step`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({}),
   });
   if (!res.ok) throw new Error(`Step request failed: ${res.status}`);
+  return res.json();
+}
+
+export async function stepWithActionName(_actionName: string, _actionId: number): Promise<StepResult> {
+  return step();
+}
+
+export async function resetSimulation(payload: {
+  seed: number;
+  scenario: string;
+  difficulty: string;
+  attacker: string;
+  strategy_mode: string;
+  action_source: string;
+  intelligence_enabled: boolean;
+}): Promise<EnvState> {
+  const res = await fetch(`${API_BASE}/reset`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Reset request failed: ${res.status}`);
   return res.json();
 }
 

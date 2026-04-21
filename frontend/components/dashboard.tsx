@@ -81,11 +81,11 @@ export function Dashboard() {
 
   const score = useMemo(() => Math.max(0, Math.round((1 - state.network_risk) * 100)), [state.network_risk]);
 
-  const runAction = async (action: number) => {
+  const runAction = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      const result = await step(action);
+      const result = await step();
       setState((prev: EnvState) => ({
         ...prev,
         episode_id: result.episode_id,
@@ -175,7 +175,7 @@ export function Dashboard() {
             {ACTIONS.map((name, idx) => (
               <Button
                 key={name}
-                onClick={() => void runAction(idx)}
+                onClick={() => void runAction()}
                 disabled={busy}
                 variant="outline"
                 size="sm"
