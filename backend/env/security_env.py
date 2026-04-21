@@ -8,6 +8,13 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from backend.intelligence.controller import IntelligenceController
+from backend.intelligence.forecast import forecast_threats
+from backend.intelligence.intelligence_log import build_incident_log
+from backend.intelligence.llm_adapter import NoopLLMSummaryAdapter
+from backend.intelligence.posture import summarize_posture
+from backend.intelligence.reasoning import build_action_reasoning
+
 from .config_loader import CANONICAL_ASSET_NAMES, RuntimeProfiles, load_runtime_profiles
 from .events import build_turn_events, summarize_events
 from .reward import compute_reward
@@ -59,6 +66,9 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         scenario: str = "legacy",
         difficulty: str = "medium",
         attacker: str = "legacy_default",
+        intelligence_enabled: bool = True,
+        strategy_mode: str = "balanced",
+        action_source: str = "ppo_ai",
     ) -> None:
         super().__init__()
 
@@ -75,6 +85,13 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
             "attacker": attacker,
         }
         self.current_profile_selection = dict(self.default_profile_selection)
+
+        self.default_runtime_controls: Dict[str, Any] = {
+            "strategy_mode": strategy_mode,
+            "action_source": action_source,
+            "intelligence_enabled": bool(intelligence_enabled),
+        }
+        self.runtime_controls: Dict[str, Any] = dict(self.default_runtime_controls)
 
         self.action_space = spaces.Discrete(12)
 
@@ -105,10 +122,18 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
             attacker_profile=self.runtime_profiles.attacker,
         )
 
+        self.intelligence_controller = IntelligenceController(
+            strategy_mode=str(self.runtime_controls["strategy_mode"]),
+            action_source=str(self.runtime_controls["action_source"]),
+        )
+        self.llm_adapter = NoopLLMSummaryAdapter()
+
         self.assets: List[Dict[str, Any]] = []
         self.episode_metrics = EpisodeMetrics()
         self.replay: List[Dict[str, Any]] = []
         self.events: List[Dict[str, Any]] = []
+        self.recent_red_logs: List[Dict[str, Any]] = []
+        self.intelligence_replay: List[Dict[str, Any]] = []
         self.last_narrative = ""
         self._reset_assets()
 
@@ -128,6 +153,23 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         }
         return load_runtime_profiles(scenario=scenario, difficulty=difficulty, attacker=attacker)
 
+    def _resolve_runtime_controls(self, options: Optional[Dict[str, Any]]) -> None:
+        if not options:
+            self.runtime_controls = dict(self.default_runtime_controls)
+        else:
+            self.runtime_controls = {
+                "strategy_mode": str(options.get("strategy_mode", self.default_runtime_controls["strategy_mode"])),
+                "action_source": str(options.get("action_source", self.default_runtime_controls["action_source"])),
+                "intelligence_enabled": bool(
+                    options.get("intelligence_enabled", self.default_runtime_controls["intelligence_enabled"])
+                ),
+            }
+
+        self.intelligence_controller.configure(
+            strategy_mode=str(self.runtime_controls["strategy_mode"]),
+            action_source=str(self.runtime_controls["action_source"]),
+        )
+
     def _sample_range(self, low: float, high: float) -> float:
         return float(self._rng.uniform(low, high))
 
@@ -139,7 +181,11 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         for name in ASSET_NAMES:
             profile = scenario["asset_profiles"][name]
             patch_level = self._sample_range(*profile["patch_level"])
-            detection_level = np.clip(self._sample_range(*profile["detection_level"]) * (0.8 + 0.4 * detection_maturity), 0.0, 1.0)
+            detection_level = np.clip(
+                self._sample_range(*profile["detection_level"]) * (0.8 + 0.4 * detection_maturity),
+                0.0,
+                1.0,
+            )
             credential_risk = self._sample_range(*profile["credential_risk"])
             backup_status = self._sample_range(*profile["backup_status"])
             criticality = float(profile["criticality"])
@@ -167,9 +213,15 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
 
     def _sync_asset_fields(self) -> None:
         for asset in self.assets:
-            asset["backup_health"] = float(np.clip(asset.get("backup_status", asset.get("backup_health", 1.0)), 0.0, 1.0))
-            asset["criticality_score"] = float(np.clip(asset.get("criticality", asset.get("criticality_score", 0.5)), 0.0, 1.0))
-            asset["uptime"] = float(1.0 if asset.get("uptime_status", True) else max(0.0, float(asset.get("uptime", 0.0))))
+            asset["backup_health"] = float(
+                np.clip(asset.get("backup_status", asset.get("backup_health", 1.0)), 0.0, 1.0)
+            )
+            asset["criticality_score"] = float(
+                np.clip(asset.get("criticality", asset.get("criticality_score", 0.5)), 0.0, 1.0)
+            )
+            asset["uptime"] = float(
+                1.0 if asset.get("uptime_status", True) else max(0.0, float(asset.get("uptime", 0.0)))
+            )
 
     def seed(self, seed: Optional[int] = None) -> None:
         self._rng = np.random.default_rng(seed)
@@ -185,6 +237,8 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
             self.seed(seed)
 
         self.runtime_profiles = self._resolve_profiles(options)
+        self._resolve_runtime_controls(options)
+
         self.threat_engine.configure(
             scenario_profile=self.runtime_profiles.scenario,
             difficulty_profile=self.runtime_profiles.difficulty,
@@ -197,6 +251,8 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         self.episode_metrics = EpisodeMetrics()
         self.replay = []
         self.events = []
+        self.recent_red_logs = []
+        self.intelligence_replay = []
         self.last_narrative = ""
         self.previous_action_name = "reset"
 
@@ -204,7 +260,17 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         self._sync_asset_fields()
 
         obs = self._get_observation()
-        info = self._build_info(last_action="reset", red_log={}, events=[], narrative="Environment initialized.")
+        info = self._build_info(
+            last_action="reset",
+            red_log={},
+            events=[],
+            narrative="Environment initialized.",
+            intelligence={
+                "enabled": bool(self.runtime_controls["intelligence_enabled"]),
+                "strategy_mode": self.runtime_controls["strategy_mode"],
+                "action_source": self.runtime_controls["action_source"],
+            },
+        )
         return obs, info
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
@@ -224,8 +290,19 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
             segmented_finance=self.segmented_finance,
             honeypot_active=self.honeypot_timer > 0,
         )
+        self.recent_red_logs.append(copy.deepcopy(red_log))
+        if len(self.recent_red_logs) > 12:
+            self.recent_red_logs = self.recent_red_logs[-12:]
 
         self._sync_asset_fields()
+
+        risk_context = {
+            "segmented_finance": self.segmented_finance,
+            "last_action": action_name,
+            "red_success": bool(red_log.get("success", False)),
+        }
+        network_risk_now = compute_network_risk(self.assets, context=risk_context)
+        risk_breakdown_now = compute_risk_breakdown(self.assets, context=risk_context)
 
         terminated, termination_reason = self._is_terminal()
         truncated = self.current_step >= self.max_steps
@@ -260,12 +337,88 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
             red_log=red_log,
             chain_context=chain_context,
         )
+
+        intelligence_payload: Dict[str, Any] = {
+            "enabled": bool(self.runtime_controls["intelligence_enabled"]),
+            "strategy_mode": self.runtime_controls["strategy_mode"],
+            "action_source": self.runtime_controls["action_source"],
+        }
+        if bool(self.runtime_controls["intelligence_enabled"]):
+            threat_forecast = forecast_threats(
+                assets=self.assets,
+                attacker_profile=self.runtime_profiles.attacker,
+                recent_red_logs=self.recent_red_logs,
+                current_red_log=red_log,
+            )
+            posture = summarize_posture(
+                assets=self.assets,
+                network_risk=network_risk_now,
+                risk_breakdown=risk_breakdown_now,
+                scenario_name=str(self.runtime_profiles.scenario.get("name", "legacy")),
+            )
+            recommendation = self.intelligence_controller.recommend_action(
+                assets=self.assets,
+                risk_breakdown=risk_breakdown_now,
+                forecast=threat_forecast,
+            )
+            reasoning = build_action_reasoning(
+                action_name=action_name,
+                assets_prev=assets_prev,
+                assets_curr=self.assets,
+                red_log=red_log,
+                forecast=threat_forecast,
+                strategy_mode=str(self.runtime_controls["strategy_mode"]),
+                posture_level=str(posture.get("level", "guarded")),
+            )
+            comparison = self.intelligence_controller.compare_actions(
+                executed_action_name=action_name,
+                recommendation=recommendation,
+            )
+
+            intelligence_payload.update(
+                {
+                    "forecast": threat_forecast,
+                    "posture": posture,
+                    "reasoning": reasoning,
+                    "recommendation": recommendation,
+                    "action_comparison": comparison,
+                }
+            )
+            intelligence_payload["llm_summary_candidate"] = self.llm_adapter.summarize_turn(intelligence_payload)
+            incident_log = build_incident_log(self.current_step, intelligence_payload)
+            intelligence_payload["incident_log"] = incident_log
+            self.intelligence_replay.append(incident_log)
+            turn_events.append(
+                {
+                    "turn": self.current_step,
+                    "actor": "intelligence",
+                    "event_type": "decision_intelligence",
+                    "target": "network",
+                    "success": True,
+                    "details": {
+                        "strategy_mode": self.runtime_controls["strategy_mode"],
+                        "action_source": self.runtime_controls["action_source"],
+                        "decision_confidence": reasoning.get("decision_confidence", 0.0),
+                    },
+                    "summary": incident_log["summary"],
+                }
+            )
+
         self.events.extend(turn_events)
         narrative = summarize_events(turn_events)
         self.last_narrative = narrative
 
-        info = self._build_info(last_action=action_name, red_log=red_log, events=turn_events, narrative=narrative)
+        info = self._build_info(
+            last_action=action_name,
+            red_log=red_log,
+            events=turn_events,
+            narrative=narrative,
+            intelligence=intelligence_payload,
+            network_risk_override=network_risk_now,
+            risk_breakdown_override=risk_breakdown_now,
+        )
         info["termination_reason"] = termination_reason
+
         self.previous_action_name = action_name
         self.replay.append(
             {
@@ -276,6 +429,7 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
                 "network_risk": info["network_risk"],
                 "events": turn_events,
                 "narrative": narrative,
+                "intelligence": intelligence_payload,
             }
         )
 
@@ -407,14 +561,22 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         red_log: Dict[str, Any],
         events: List[Dict[str, Any]],
         narrative: str,
+        intelligence: Optional[Dict[str, Any]] = None,
+        network_risk_override: Optional[float] = None,
+        risk_breakdown_override: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
-        risk_context = {
-            "segmented_finance": self.segmented_finance,
-            "last_action": last_action,
-            "red_success": bool(red_log.get("success", False)),
-        }
-        network_risk = compute_network_risk(self.assets, context=risk_context)
-        risk_breakdown = compute_risk_breakdown(self.assets, context=risk_context)
+        if network_risk_override is None or risk_breakdown_override is None:
+            risk_context = {
+                "segmented_finance": self.segmented_finance,
+                "last_action": last_action,
+                "red_success": bool(red_log.get("success", False)),
+            }
+            network_risk = compute_network_risk(self.assets, context=risk_context)
+            risk_breakdown = compute_risk_breakdown(self.assets, context=risk_context)
+        else:
+            network_risk = float(network_risk_override)
+            risk_breakdown = dict(risk_breakdown_override)
+
         return {
             "step": self.current_step,
             "last_action": last_action,
@@ -432,6 +594,15 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
                 "recovery_speed": self.runtime_profiles.scenario.get("recovery_speed", 0.55),
                 "critical_assets": self.runtime_profiles.scenario.get("critical_assets", []),
                 "attack_priorities": self.runtime_profiles.scenario.get("attack_priorities", []),
+                "strategy_mode": self.runtime_controls["strategy_mode"],
+                "action_source": self.runtime_controls["action_source"],
+                "intelligence_enabled": bool(self.runtime_controls["intelligence_enabled"]),
+            },
+            "intelligence": intelligence
+            or {
+                "enabled": bool(self.runtime_controls["intelligence_enabled"]),
+                "strategy_mode": self.runtime_controls["strategy_mode"],
+                "action_source": self.runtime_controls["action_source"],
             },
             "metrics": {
                 "total_reward": self.episode_metrics.total_reward,
@@ -443,7 +614,17 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         }
 
     def render(self) -> None:
-        info = self._build_info(last_action="render", red_log={}, events=[], narrative=self.last_narrative)
+        info = self._build_info(
+            last_action="render",
+            red_log={},
+            events=[],
+            narrative=self.last_narrative,
+            intelligence={
+                "enabled": bool(self.runtime_controls["intelligence_enabled"]),
+                "strategy_mode": self.runtime_controls["strategy_mode"],
+                "action_source": self.runtime_controls["action_source"],
+            },
+        )
         profile = info["profile"]
         print(
             f"Step={info['step']} Risk={info['network_risk']:.3f} "

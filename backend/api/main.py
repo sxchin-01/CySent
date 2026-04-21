@@ -76,6 +76,10 @@ class CySentRuntime:
                 "assets": self.last_info.get("assets", []),
                 "last_action": self.last_info.get("last_action", "reset"),
                 "red_log": self.last_info.get("red_log", {}),
+                "profile": self.last_info.get("profile", {}),
+                "intelligence": self.last_info.get("intelligence", {}),
+                "events": self.last_info.get("events", []),
+                "narrative": self.last_info.get("narrative", ""),
                 "termination_reason": self.last_info.get("termination_reason", "active"),
             }
 
@@ -116,6 +120,10 @@ def step(req: StepRequest) -> Dict[str, Any]:
             "risk_breakdown": info.get("risk_breakdown", {}),
             "assets": info["assets"],
             "red_log": info["red_log"],
+            "profile": info.get("profile", {}),
+            "intelligence": info.get("intelligence", {}),
+            "events": info.get("events", []),
+            "narrative": info.get("narrative", ""),
             "metrics": info["metrics"],
             "termination_reason": info.get("termination_reason", "active"),
         }
