@@ -121,6 +121,30 @@ Artifacts:
 2. `backend/train/artifacts/benchmark/benchmark_table.csv`
 3. `backend/train/artifacts/benchmark/benchmark_table.json`
 
+## Train CySent Model in Colab with Unsloth
+
+Quickstart:
+1. Build dataset locally:
+
+```bash
+python scripts/build_cysent_dataset.py --output datasets/cysent_action_dataset.jsonl --rows 1200
+```
+
+2. Open notebook and run cells in order:
+
+1. `notebooks/CySent_Unsloth_Train.ipynb`
+
+3. Save adapter and test local inference:
+
+```bash
+python scripts/test_hf_agent.py --base-model Qwen/Qwen2.5-3B-Instruct --adapter outputs/cysent_unsloth_adapter --state "risk=0.72, attack=phishing_email, target=auth server, compromised=1, credential_exposure=0.81"
+```
+
+Notes:
+1. Dataset rows are generated in CySent instruction format: `instruction`, `input`, `output`.
+2. Output action labels are constrained to current CySent valid action names.
+3. PPO and backend runtime paths remain unchanged.
+
 ## Export Endpoints
 
 1. Replay JSON download: `GET /replay/{episode_id}/export`
