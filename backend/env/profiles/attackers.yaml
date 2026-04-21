@@ -1,0 +1,76 @@
+attackers:
+  ransomware_gang:
+    description: Aggressive disruption actor focused on encryption and downtime.
+    attack_bias:
+      lateral_movement: 0.22
+      ransomware_attempt: 0.28
+      credential_theft: 0.16
+      data_exfiltration: 0.10
+      recon_scan: 0.08
+    chain_bias: 0.85
+    stealth_modifier: 0.90
+    target_criticality_bias: 1.20
+    target_backup_bias: 1.35
+    chain_templates:
+      - [phishing_email, credential_theft, lateral_movement, ransomware_attempt]
+      - [recon_scan, malware_dropper, lateral_movement, ransomware_attempt]
+  credential_thief:
+    description: Identity-centric attacker abusing authentication controls.
+    attack_bias:
+      phishing_email: 0.26
+      password_spray: 0.24
+      credential_theft: 0.27
+      privilege_escalation: 0.12
+      insider_misuse: 0.06
+    chain_bias: 0.80
+    stealth_modifier: 1.05
+    target_criticality_bias: 1.05
+    target_backup_bias: 0.95
+    chain_templates:
+      - [phishing_email, credential_theft, privilege_escalation, lateral_movement]
+      - [password_spray, credential_theft, data_exfiltration]
+  silent_apt:
+    description: Stealth-focused actor prioritizing persistence and exfiltration.
+    attack_bias:
+      recon_scan: 0.20
+      malware_dropper: 0.12
+      privilege_escalation: 0.18
+      lateral_movement: 0.16
+      data_exfiltration: 0.24
+    chain_bias: 0.92
+    stealth_modifier: 1.20
+    target_criticality_bias: 1.15
+    target_backup_bias: 0.90
+    chain_templates:
+      - [recon_scan, malware_dropper, privilege_escalation, data_exfiltration]
+      - [recon_scan, credential_theft, lateral_movement, data_exfiltration]
+  insider_saboteur:
+    description: Abusive insider actor with privileged misuse potential.
+    attack_bias:
+      insider_misuse: 0.30
+      credential_theft: 0.20
+      privilege_escalation: 0.16
+      ransomware_attempt: 0.14
+      data_exfiltration: 0.14
+    chain_bias: 0.78
+    stealth_modifier: 1.10
+    target_criticality_bias: 1.25
+    target_backup_bias: 1.05
+    chain_templates:
+      - [insider_misuse, credential_theft, privilege_escalation, ransomware_attempt]
+      - [insider_misuse, lateral_movement, data_exfiltration]
+  botnet:
+    description: Noisy distributed attacker focused on broad compromise attempts.
+    attack_bias:
+      recon_scan: 0.18
+      phishing_email: 0.14
+      malware_dropper: 0.22
+      password_spray: 0.18
+      lateral_movement: 0.14
+    chain_bias: 0.72
+    stealth_modifier: 0.82
+    target_criticality_bias: 1.00
+    target_backup_bias: 1.08
+    chain_templates:
+      - [recon_scan, malware_dropper, lateral_movement]
+      - [password_spray, credential_theft, malware_dropper]

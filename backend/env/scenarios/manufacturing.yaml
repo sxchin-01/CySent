@@ -1,0 +1,78 @@
+name: manufacturing
+description: Hybrid IT/OT manufacturing network with production uptime sensitivity.
+budget: medium
+detection_maturity: 0.58
+recovery_speed: 0.60
+critical_assets:
+  - Backup Infrastructure
+  - Auth Server
+  - Finance Database
+attack_priorities:
+  - Web Server
+  - Auth Server
+  - Backup Infrastructure
+  - Finance Database
+network_topology:
+  - [Web Server, Auth Server]
+  - [Auth Server, Finance Database]
+  - [Backup Infrastructure, Finance Database]
+  - [Employee Email, HR Systems]
+  - [SOC Monitoring Console, Backup Infrastructure]
+asset_inventory:
+  - HR Systems
+  - Employee Email
+  - Web Server
+  - Auth Server
+  - Finance Database
+  - Backup Infrastructure
+  - SOC Monitoring Console
+asset_profiles:
+  HR Systems:
+    patch_level: [0.44, 0.72]
+    detection_level: [0.34, 0.62]
+    credential_risk: [0.26, 0.50]
+    backup_status: [0.70, 0.92]
+    criticality: 0.56
+    business_dependency: 0.66
+  Employee Email:
+    patch_level: [0.42, 0.70]
+    detection_level: [0.32, 0.60]
+    credential_risk: [0.30, 0.58]
+    backup_status: [0.66, 0.90]
+    criticality: 0.64
+    business_dependency: 0.70
+  Web Server:
+    patch_level: [0.40, 0.68]
+    detection_level: [0.34, 0.62]
+    credential_risk: [0.26, 0.48]
+    backup_status: [0.66, 0.90]
+    criticality: 0.82
+    business_dependency: 0.88
+  Auth Server:
+    patch_level: [0.44, 0.72]
+    detection_level: [0.40, 0.68]
+    credential_risk: [0.24, 0.48]
+    backup_status: [0.70, 0.92]
+    criticality: 0.90
+    business_dependency: 0.92
+  Finance Database:
+    patch_level: [0.46, 0.74]
+    detection_level: [0.38, 0.66]
+    credential_risk: [0.22, 0.42]
+    backup_status: [0.72, 0.94]
+    criticality: 0.96
+    business_dependency: 0.84
+  Backup Infrastructure:
+    patch_level: [0.48, 0.76]
+    detection_level: [0.34, 0.60]
+    credential_risk: [0.18, 0.38]
+    backup_status: [0.78, 0.98]
+    criticality: 0.90
+    business_dependency: 0.94
+  SOC Monitoring Console:
+    patch_level: [0.52, 0.82]
+    detection_level: [0.48, 0.78]
+    credential_risk: [0.16, 0.32]
+    backup_status: [0.70, 0.92]
+    criticality: 0.74
+    business_dependency: 0.78

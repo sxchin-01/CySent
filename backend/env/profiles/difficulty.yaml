@@ -1,0 +1,22 @@
+levels:
+  easy:
+    attack_frequency: 0.72
+    exploit_success_multiplier: 0.88
+    stealth_probability: 0.25
+    escalation_speed: 0.78
+    zero_day_chance: 0.03
+    insider_event_chance: 0.02
+  medium:
+    attack_frequency: 0.84
+    exploit_success_multiplier: 1.0
+    stealth_probability: 0.35
+    escalation_speed: 1.0
+    zero_day_chance: 0.06
+    insider_event_chance: 0.04
+  hard:
+    attack_frequency: 0.95
+    exploit_success_multiplier: 1.12
+    stealth_probability: 0.48
+    escalation_speed: 1.18
+    zero_day_chance: 0.10
+    insider_event_chance: 0.07

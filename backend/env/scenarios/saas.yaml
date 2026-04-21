@@ -1,0 +1,78 @@
+name: saas
+description: Cloud-first SaaS platform with high internet exposure and rapid deployment cadence.
+budget: medium
+detection_maturity: 0.61
+recovery_speed: 0.70
+critical_assets:
+  - Web Server
+  - Auth Server
+  - Finance Database
+attack_priorities:
+  - Web Server
+  - Auth Server
+  - Employee Email
+  - Finance Database
+network_topology:
+  - [Web Server, Auth Server]
+  - [Auth Server, Finance Database]
+  - [Employee Email, Auth Server]
+  - [Backup Infrastructure, Finance Database]
+  - [SOC Monitoring Console, Web Server]
+asset_inventory:
+  - HR Systems
+  - Employee Email
+  - Web Server
+  - Auth Server
+  - Finance Database
+  - Backup Infrastructure
+  - SOC Monitoring Console
+asset_profiles:
+  HR Systems:
+    patch_level: [0.52, 0.80]
+    detection_level: [0.40, 0.66]
+    credential_risk: [0.24, 0.46]
+    backup_status: [0.70, 0.92]
+    criticality: 0.56
+    business_dependency: 0.64
+  Employee Email:
+    patch_level: [0.50, 0.78]
+    detection_level: [0.38, 0.64]
+    credential_risk: [0.30, 0.58]
+    backup_status: [0.64, 0.90]
+    criticality: 0.68
+    business_dependency: 0.74
+  Web Server:
+    patch_level: [0.40, 0.68]
+    detection_level: [0.36, 0.62]
+    credential_risk: [0.28, 0.52]
+    backup_status: [0.64, 0.90]
+    criticality: 0.90
+    business_dependency: 1.0
+  Auth Server:
+    patch_level: [0.44, 0.72]
+    detection_level: [0.42, 0.68]
+    credential_risk: [0.24, 0.50]
+    backup_status: [0.68, 0.92]
+    criticality: 0.90
+    business_dependency: 0.96
+  Finance Database:
+    patch_level: [0.48, 0.74]
+    detection_level: [0.44, 0.70]
+    credential_risk: [0.20, 0.40]
+    backup_status: [0.76, 0.95]
+    criticality: 0.92
+    business_dependency: 0.84
+  Backup Infrastructure:
+    patch_level: [0.52, 0.84]
+    detection_level: [0.42, 0.68]
+    credential_risk: [0.16, 0.34]
+    backup_status: [0.80, 0.98]
+    criticality: 0.84
+    business_dependency: 0.90
+  SOC Monitoring Console:
+    patch_level: [0.56, 0.86]
+    detection_level: [0.54, 0.84]
+    credential_risk: [0.14, 0.30]
+    backup_status: [0.70, 0.93]
+    criticality: 0.76
+    business_dependency: 0.78

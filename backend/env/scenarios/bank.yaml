@@ -1,0 +1,78 @@
+name: bank
+description: Regional bank with payment rails and strict financial controls.
+budget: high
+detection_maturity: 0.72
+recovery_speed: 0.68
+critical_assets:
+  - Finance Database
+  - Auth Server
+  - Backup Infrastructure
+attack_priorities:
+  - Finance Database
+  - Auth Server
+  - Employee Email
+  - Web Server
+network_topology:
+  - [Employee Email, Auth Server]
+  - [Web Server, Auth Server]
+  - [Auth Server, Finance Database]
+  - [Backup Infrastructure, Finance Database]
+  - [SOC Monitoring Console, Auth Server]
+asset_inventory:
+  - HR Systems
+  - Employee Email
+  - Web Server
+  - Auth Server
+  - Finance Database
+  - Backup Infrastructure
+  - SOC Monitoring Console
+asset_profiles:
+  HR Systems:
+    patch_level: [0.55, 0.82]
+    detection_level: [0.45, 0.70]
+    credential_risk: [0.20, 0.42]
+    backup_status: [0.72, 0.92]
+    criticality: 0.58
+    business_dependency: 0.66
+  Employee Email:
+    patch_level: [0.58, 0.84]
+    detection_level: [0.46, 0.72]
+    credential_risk: [0.24, 0.48]
+    backup_status: [0.70, 0.90]
+    criticality: 0.69
+    business_dependency: 0.75
+  Web Server:
+    patch_level: [0.52, 0.78]
+    detection_level: [0.48, 0.74]
+    credential_risk: [0.22, 0.42]
+    backup_status: [0.72, 0.92]
+    criticality: 0.80
+    business_dependency: 0.83
+  Auth Server:
+    patch_level: [0.56, 0.82]
+    detection_level: [0.55, 0.80]
+    credential_risk: [0.20, 0.40]
+    backup_status: [0.78, 0.95]
+    criticality: 0.91
+    business_dependency: 0.94
+  Finance Database:
+    patch_level: [0.60, 0.86]
+    detection_level: [0.58, 0.82]
+    credential_risk: [0.16, 0.34]
+    backup_status: [0.80, 0.97]
+    criticality: 1.0
+    business_dependency: 1.0
+  Backup Infrastructure:
+    patch_level: [0.60, 0.88]
+    detection_level: [0.46, 0.74]
+    credential_risk: [0.14, 0.30]
+    backup_status: [0.86, 0.99]
+    criticality: 0.86
+    business_dependency: 0.90
+  SOC Monitoring Console:
+    patch_level: [0.62, 0.90]
+    detection_level: [0.62, 0.90]
+    credential_risk: [0.12, 0.26]
+    backup_status: [0.74, 0.93]
+    criticality: 0.78
+    business_dependency: 0.80

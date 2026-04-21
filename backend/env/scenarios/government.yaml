@@ -1,0 +1,78 @@
+name: government
+description: Public-sector environment with sensitive data, strict controls, and slower change cycles.
+budget: constrained
+detection_maturity: 0.69
+recovery_speed: 0.52
+critical_assets:
+  - Finance Database
+  - Auth Server
+  - SOC Monitoring Console
+attack_priorities:
+  - Auth Server
+  - Finance Database
+  - SOC Monitoring Console
+  - Web Server
+network_topology:
+  - [Employee Email, HR Systems]
+  - [Web Server, Auth Server]
+  - [Auth Server, Finance Database]
+  - [SOC Monitoring Console, Auth Server]
+  - [Backup Infrastructure, Finance Database]
+asset_inventory:
+  - HR Systems
+  - Employee Email
+  - Web Server
+  - Auth Server
+  - Finance Database
+  - Backup Infrastructure
+  - SOC Monitoring Console
+asset_profiles:
+  HR Systems:
+    patch_level: [0.46, 0.72]
+    detection_level: [0.46, 0.74]
+    credential_risk: [0.24, 0.46]
+    backup_status: [0.72, 0.93]
+    criticality: 0.58
+    business_dependency: 0.68
+  Employee Email:
+    patch_level: [0.44, 0.70]
+    detection_level: [0.44, 0.72]
+    credential_risk: [0.28, 0.54]
+    backup_status: [0.68, 0.91]
+    criticality: 0.66
+    business_dependency: 0.72
+  Web Server:
+    patch_level: [0.45, 0.70]
+    detection_level: [0.45, 0.74]
+    credential_risk: [0.24, 0.46]
+    backup_status: [0.70, 0.92]
+    criticality: 0.78
+    business_dependency: 0.76
+  Auth Server:
+    patch_level: [0.48, 0.74]
+    detection_level: [0.52, 0.80]
+    credential_risk: [0.22, 0.44]
+    backup_status: [0.74, 0.95]
+    criticality: 0.93
+    business_dependency: 0.94
+  Finance Database:
+    patch_level: [0.48, 0.74]
+    detection_level: [0.50, 0.78]
+    credential_risk: [0.18, 0.38]
+    backup_status: [0.78, 0.96]
+    criticality: 1.0
+    business_dependency: 0.92
+  Backup Infrastructure:
+    patch_level: [0.54, 0.82]
+    detection_level: [0.46, 0.74]
+    credential_risk: [0.16, 0.34]
+    backup_status: [0.84, 0.99]
+    criticality: 0.86
+    business_dependency: 0.88
+  SOC Monitoring Console:
+    patch_level: [0.58, 0.86]
+    detection_level: [0.60, 0.90]
+    credential_risk: [0.12, 0.26]
+    backup_status: [0.74, 0.94]
+    criticality: 0.88
+    business_dependency: 0.82

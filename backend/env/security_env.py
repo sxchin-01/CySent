@@ -8,6 +8,8 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from .config_loader import CANONICAL_ASSET_NAMES, RuntimeProfiles, load_runtime_profiles
+from .events import build_turn_events, summarize_events
 from .reward import compute_reward
 from .risk import compute_network_risk, compute_risk_breakdown
 from .threat_engine import ThreatEngine
@@ -18,15 +20,7 @@ except Exception:  # pragma: no cover - optional runtime integration
     openenv = None
 
 
-ASSET_NAMES = [
-    "HR Systems",
-    "Employee Email",
-    "Web Server",
-    "Auth Server",
-    "Finance Database",
-    "Backup Infrastructure",
-    "SOC Monitoring Console",
-]
+ASSET_NAMES = list(CANONICAL_ASSET_NAMES)
 
 ACTION_NAMES = {
     0: "do_nothing",
@@ -58,7 +52,14 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
 
     metadata = {"render_modes": ["human"], "render_fps": 8}
 
-    def __init__(self, max_steps: int = 150, seed: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        max_steps: int = 150,
+        seed: Optional[int] = None,
+        scenario: str = "legacy",
+        difficulty: str = "medium",
+        attacker: str = "legacy_default",
+    ) -> None:
         super().__init__()
 
         self.max_steps = max_steps
@@ -67,6 +68,13 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         self.honeypot_timer = 0
         self.training_mode = True
         self.previous_action_name = "reset"
+
+        self.default_profile_selection = {
+            "scenario": scenario,
+            "difficulty": difficulty,
+            "attacker": attacker,
+        }
+        self.current_profile_selection = dict(self.default_profile_selection)
 
         self.action_space = spaces.Discrete(12)
 
@@ -84,40 +92,84 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         )
 
         self._rng = np.random.default_rng(seed)
-        self.threat_engine = ThreatEngine(seed=seed)
+        self.runtime_profiles: RuntimeProfiles = load_runtime_profiles(
+            scenario=scenario,
+            difficulty=difficulty,
+            attacker=attacker,
+        )
+
+        self.threat_engine = ThreatEngine(
+            seed=seed,
+            scenario_profile=self.runtime_profiles.scenario,
+            difficulty_profile=self.runtime_profiles.difficulty,
+            attacker_profile=self.runtime_profiles.attacker,
+        )
 
         self.assets: List[Dict[str, Any]] = []
         self.episode_metrics = EpisodeMetrics()
         self.replay: List[Dict[str, Any]] = []
+        self.events: List[Dict[str, Any]] = []
+        self.last_narrative = ""
         self._reset_assets()
 
-    def _reset_assets(self) -> None:
-        criticality = {
-            "HR Systems": 0.55,
-            "Employee Email": 0.65,
-            "Web Server": 0.78,
-            "Auth Server": 0.88,
-            "Finance Database": 1.00,
-            "Backup Infrastructure": 0.82,
-            "SOC Monitoring Console": 0.72,
+    def _resolve_profiles(self, options: Optional[Dict[str, Any]]) -> RuntimeProfiles:
+        if not options:
+            self.current_profile_selection = dict(self.default_profile_selection)
+            return load_runtime_profiles(**self.current_profile_selection)
+
+        scenario = str(options.get("scenario", self.default_profile_selection["scenario"]))
+        difficulty = str(options.get("difficulty", self.default_profile_selection["difficulty"]))
+        attacker = str(options.get("attacker", self.default_profile_selection["attacker"]))
+
+        self.current_profile_selection = {
+            "scenario": scenario,
+            "difficulty": difficulty,
+            "attacker": attacker,
         }
+        return load_runtime_profiles(scenario=scenario, difficulty=difficulty, attacker=attacker)
+
+    def _sample_range(self, low: float, high: float) -> float:
+        return float(self._rng.uniform(low, high))
+
+    def _reset_assets(self) -> None:
+        scenario = self.runtime_profiles.scenario
+        detection_maturity = float(scenario.get("detection_maturity", 0.55))
 
         self.assets = []
         for name in ASSET_NAMES:
+            profile = scenario["asset_profiles"][name]
+            patch_level = self._sample_range(*profile["patch_level"])
+            detection_level = np.clip(self._sample_range(*profile["detection_level"]) * (0.8 + 0.4 * detection_maturity), 0.0, 1.0)
+            credential_risk = self._sample_range(*profile["credential_risk"])
+            backup_status = self._sample_range(*profile["backup_status"])
+            criticality = float(profile["criticality"])
+            dependency = float(profile["business_dependency"])
+
             self.assets.append(
                 {
                     "name": name,
-                    "patch_level": float(self._rng.uniform(0.45, 0.80)),
+                    "patch_level": float(np.clip(patch_level, 0.0, 1.0)),
                     "infected": False,
                     "isolated": False,
                     "compromised": False,
-                    "criticality_score": criticality[name],
-                    "credential_risk": float(self._rng.uniform(0.20, 0.50)),
-                    "detection_level": float(self._rng.uniform(0.35, 0.70)),
-                    "backup_health": float(self._rng.uniform(0.65, 0.95)),
+                    "detection_level": float(np.clip(detection_level, 0.0, 1.0)),
+                    "credential_risk": float(np.clip(credential_risk, 0.0, 1.0)),
                     "uptime_status": True,
+                    "uptime": 1.0,
+                    "backup_status": float(np.clip(backup_status, 0.0, 1.0)),
+                    "criticality": float(np.clip(criticality, 0.0, 1.0)),
+                    "business_dependency": float(np.clip(dependency, 0.0, 1.0)),
+                    # Backward-compat aliases consumed by existing reward/risk logic.
+                    "criticality_score": float(np.clip(criticality, 0.0, 1.0)),
+                    "backup_health": float(np.clip(backup_status, 0.0, 1.0)),
                 }
             )
+
+    def _sync_asset_fields(self) -> None:
+        for asset in self.assets:
+            asset["backup_health"] = float(np.clip(asset.get("backup_status", asset.get("backup_health", 1.0)), 0.0, 1.0))
+            asset["criticality_score"] = float(np.clip(asset.get("criticality", asset.get("criticality_score", 0.5)), 0.0, 1.0))
+            asset["uptime"] = float(1.0 if asset.get("uptime_status", True) else max(0.0, float(asset.get("uptime", 0.0))))
 
     def seed(self, seed: Optional[int] = None) -> None:
         self._rng = np.random.default_rng(seed)
@@ -132,16 +184,27 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         if seed is not None:
             self.seed(seed)
 
+        self.runtime_profiles = self._resolve_profiles(options)
+        self.threat_engine.configure(
+            scenario_profile=self.runtime_profiles.scenario,
+            difficulty_profile=self.runtime_profiles.difficulty,
+            attacker_profile=self.runtime_profiles.attacker,
+        )
+
         self.current_step = 0
         self.segmented_finance = False
         self.honeypot_timer = 0
         self.episode_metrics = EpisodeMetrics()
         self.replay = []
+        self.events = []
+        self.last_narrative = ""
         self.previous_action_name = "reset"
+
         self._reset_assets()
+        self._sync_asset_fields()
 
         obs = self._get_observation()
-        info = self._build_info(last_action="reset", red_log={})
+        info = self._build_info(last_action="reset", red_log={}, events=[], narrative="Environment initialized.")
         return obs, info
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
@@ -154,14 +217,15 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         if self.honeypot_timer > 0:
             self.honeypot_timer -= 1
 
-        target_idx, attack = self.threat_engine.choose_attack(self.assets)
+        attack_choice = self.threat_engine.choose_attack(self.assets, step=self.current_step)
         red_log = self.threat_engine.apply_attack(
             assets=self.assets,
-            target_idx=target_idx,
-            attack_type=attack,
+            attack_choice=attack_choice,
             segmented_finance=self.segmented_finance,
             honeypot_active=self.honeypot_timer > 0,
         )
+
+        self._sync_asset_fields()
 
         terminated, termination_reason = self._is_terminal()
         truncated = self.current_step >= self.max_steps
@@ -189,7 +253,18 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         self.episode_metrics.breaches = sum(1 for a in self.assets if a["compromised"])
         self.episode_metrics.downtime_events = sum(1 for a in self.assets if not a["uptime_status"])
 
-        info = self._build_info(last_action=action_name, red_log=red_log)
+        chain_context = red_log.get("chain", {}) if isinstance(red_log.get("chain", {}), dict) else {}
+        turn_events = build_turn_events(
+            turn=self.current_step,
+            action_name=action_name,
+            red_log=red_log,
+            chain_context=chain_context,
+        )
+        self.events.extend(turn_events)
+        narrative = summarize_events(turn_events)
+        self.last_narrative = narrative
+
+        info = self._build_info(last_action=action_name, red_log=red_log, events=turn_events, narrative=narrative)
         info["termination_reason"] = termination_reason
         self.previous_action_name = action_name
         self.replay.append(
@@ -199,13 +274,14 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
                 "red": red_log,
                 "reward": reward,
                 "network_risk": info["network_risk"],
+                "events": turn_events,
+                "narrative": narrative,
             }
         )
 
         return self._get_observation(), float(reward), terminated, truncated, info
 
     def _is_terminal(self) -> Tuple[bool, str]:
-        # End episode early on catastrophic breach state.
         compromised_critical = [
             a for a in self.assets if a["compromised"] and a["criticality_score"] >= 0.88
         ]
@@ -220,10 +296,11 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
 
     def _apply_blue_action(self, action: int) -> Tuple[str, float]:
         action_name = ACTION_NAMES[action]
+        recovery_speed = float(self.runtime_profiles.scenario.get("recovery_speed", 0.55))
 
         def patch(name: str) -> None:
             asset = self._find_asset(name)
-            asset["patch_level"] = float(np.clip(asset["patch_level"] + 0.25, 0.0, 1.0))
+            asset["patch_level"] = float(np.clip(asset["patch_level"] + (0.20 + 0.12 * recovery_speed), 0.0, 1.0))
             asset["infected"] = False
 
         if action == 0:
@@ -245,18 +322,21 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
             target = max(self.assets, key=lambda a: (float(a["infected"]), float(a["credential_risk"])))
             target["isolated"] = True
             target["uptime_status"] = False
+            target["uptime"] = float(np.clip(target.get("uptime", 1.0) - 0.20, 0.0, 1.0))
             return action_name, 0.14
         if action == 6:
             for asset in self.assets:
                 asset["detection_level"] = float(np.clip(asset["detection_level"] + 0.15, 0.0, 1.0))
             return action_name, 0.12
         if action == 7:
+            restore_gain = 0.15 + 0.15 * recovery_speed
             for asset in self.assets:
                 if not asset["uptime_status"]:
                     asset["uptime_status"] = True
                     asset["infected"] = False
                     asset["compromised"] = False
-                asset["backup_health"] = float(np.clip(asset["backup_health"] + 0.20, 0.0, 1.0))
+                asset["backup_status"] = float(np.clip(asset["backup_status"] + restore_gain, 0.0, 1.0))
+                asset["uptime"] = float(np.clip(asset.get("uptime", 1.0) + restore_gain, 0.0, 1.0))
             return action_name, 0.20
         if action == 8:
             self.honeypot_timer = 5
@@ -320,7 +400,14 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
 
         return np.asarray(values, dtype=np.float32)
 
-    def _build_info(self, last_action: str, red_log: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_info(
+        self,
+        *,
+        last_action: str,
+        red_log: Dict[str, Any],
+        events: List[Dict[str, Any]],
+        narrative: str,
+    ) -> Dict[str, Any]:
         risk_context = {
             "segmented_finance": self.segmented_finance,
             "last_action": last_action,
@@ -335,6 +422,17 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
             "risk_breakdown": risk_breakdown,
             "assets": copy.deepcopy(self.assets),
             "red_log": red_log,
+            "events": events,
+            "narrative": narrative,
+            "profile": {
+                "scenario": self.runtime_profiles.scenario.get("name", "legacy"),
+                "difficulty": self.runtime_profiles.difficulty.get("name", "medium"),
+                "attacker": self.runtime_profiles.attacker.get("name", "legacy_default"),
+                "detection_maturity": self.runtime_profiles.scenario.get("detection_maturity", 0.55),
+                "recovery_speed": self.runtime_profiles.scenario.get("recovery_speed", 0.55),
+                "critical_assets": self.runtime_profiles.scenario.get("critical_assets", []),
+                "attack_priorities": self.runtime_profiles.scenario.get("attack_priorities", []),
+            },
             "metrics": {
                 "total_reward": self.episode_metrics.total_reward,
                 "breach_count": self.episode_metrics.breaches,
@@ -345,8 +443,12 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         }
 
     def render(self) -> None:
-        info = self._build_info(last_action="render", red_log={})
-        print(f"Step={info['step']} Risk={info['network_risk']:.3f}")
+        info = self._build_info(last_action="render", red_log={}, events=[], narrative=self.last_narrative)
+        profile = info["profile"]
+        print(
+            f"Step={info['step']} Risk={info['network_risk']:.3f} "
+            f"Scenario={profile['scenario']} Difficulty={profile['difficulty']} Attacker={profile['attacker']}"
+        )
 
 
 def maybe_register_openenv_env() -> None:
