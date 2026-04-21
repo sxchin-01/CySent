@@ -1,0 +1,18 @@
+default_agent: ppo_agent
+
+# Agent modes for credit saving
+# full_llm: Use HF LLM for every turn
+# hybrid: Use HF LLM on high-risk situations or every N turns
+# ppo_only: Use only PPO agent
+mode: hybrid
+
+# Hybrid mode settings
+hybrid_threshold: 10  # Use HF every N turns in hybrid mode
+
+# HF Agent settings
+hf_model_id: microsoft/DialoGPT-medium  # Default model, can be overridden by env var
+hf_timeout: 10.0
+hf_max_retries: 3
+
+# PPO Agent settings
+ppo_model_path: backend/train/artifacts/best_model/best_model.zip

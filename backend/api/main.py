@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from backend.agents import AgentRouter
 from backend.env.security_env import ACTION_NAMES, CySentSecurityEnv
 from backend.train.benchmark import build_benchmark
 from backend.train.evaluate import evaluate
@@ -28,6 +29,16 @@ app.add_middleware(
 
 class StepRequest(BaseModel):
     action: int = Field(ge=0, le=11)
+
+
+class ResetRequest(BaseModel):
+    seed: int = 42
+    scenario: str = "legacy"
+    difficulty: str = "medium"
+    attacker: str = "legacy_default"
+    strategy_mode: str = "balanced"
+    action_source: str = "ppo_ai"
+    intelligence_enabled: bool = True
 
 
 class TrainRequest(BaseModel):
@@ -54,7 +65,9 @@ class BenchmarkRequest(BaseModel):
 class CySentRuntime:
     def __init__(self) -> None:
         self.env = CySentSecurityEnv(max_steps=150, seed=42)
-        self.state_lock = threading.Lock()
+        self.agent_router = AgentRouter()
+        # Re-entrant lock prevents deadlocks when locked code paths call snapshot_state().
+        self.state_lock = threading.RLock()
         self.last_info: Dict[str, Any] = self.env.reset()[1]
         self.current_episode_id = str(uuid.uuid4())
         self.replays: Dict[str, List[Dict[str, Any]]] = {}
@@ -97,12 +110,58 @@ def get_state() -> Dict[str, Any]:
     return runtime.snapshot_state()
 
 
-@app.post("/step")
-def step(req: StepRequest) -> Dict[str, Any]:
+@app.post("/reset")
+def reset(req: ResetRequest) -> Dict[str, Any]:
     with runtime.state_lock:
-        _, reward, terminated, truncated, info = runtime.env.step(req.action)
-        info["action_name"] = ACTION_NAMES[req.action]
+        # Switch agent based on action_source
+        if req.action_source in ["ppo_agent", "hf_llm_agent"]:
+            runtime.agent_router.switch_agent(req.action_source)
+
+        _, info = runtime.env.reset(
+            seed=req.seed,
+            options={
+                "scenario": req.scenario,
+                "difficulty": req.difficulty,
+                "attacker": req.attacker,
+                "strategy_mode": req.strategy_mode,
+                "action_source": req.action_source,
+                "intelligence_enabled": req.intelligence_enabled,
+            },
+        )
+        runtime.current_episode_id = str(uuid.uuid4())
+        runtime.last_info = info
+
+        return {
+            "episode_id": runtime.current_episode_id,
+            "step": info.get("step", 0),
+            "network_risk": info.get("network_risk", 0.0),
+            "risk_breakdown": info.get("risk_breakdown", {}),
+            "assets": info.get("assets", []),
+            "last_action": info.get("last_action", "reset"),
+            "red_log": info.get("red_log", {}),
+            "profile": info.get("profile", {}),
+            "intelligence": info.get("intelligence", {}),
+            "events": info.get("events", []),
+            "narrative": info.get("narrative", ""),
+            "termination_reason": info.get("termination_reason", "active"),
+        }
+
+
+@app.post("/step")
+def step() -> Dict[str, Any]:
+    with runtime.state_lock:
+        # Get current observation and state for agent decision
+        obs = runtime.env._get_observation()
+        state = runtime.snapshot_state()
+
+        # Use agent router to select action
+        action = runtime.agent_router.predict_action(obs, state)
+
+        _, reward, terminated, truncated, info = runtime.env.step(action)
+        info["action_name"] = ACTION_NAMES[action]
         info["reward"] = float(reward)
+        info["selected_action"] = action
+        info["active_agent"] = runtime.agent_router.get_active_agent_name()
 
         if terminated or truncated:
             runtime.replays[runtime.current_episode_id] = list(runtime.env.replay)
@@ -116,6 +175,8 @@ def step(req: StepRequest) -> Dict[str, Any]:
             "terminated": terminated,
             "truncated": truncated,
             "action_name": info["action_name"],
+            "selected_action": info.get("selected_action"),
+            "active_agent": info.get("active_agent"),
             "network_risk": info["network_risk"],
             "risk_breakdown": info.get("risk_breakdown", {}),
             "assets": info["assets"],
