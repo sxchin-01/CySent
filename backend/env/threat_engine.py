@@ -36,6 +36,11 @@ class ThreatEngine:
 
         self._campaign_counter = 0
         self._active_chain: Optional[Dict[str, Any]] = None
+        self._attacker_goal = self._resolve_goal(self._attacker_profile)
+        self._blue_action_memory: List[str] = []
+        self._stealth_meter = 0.0
+        self._threat_pressure = 0.0
+        self._goal_progress = 0.0
 
     def seed(self, seed: int | None) -> None:
         self._rng.seed(seed)
@@ -50,13 +55,26 @@ class ThreatEngine:
         self._scenario_profile = scenario_profile
         self._difficulty_profile = difficulty_profile
         self._attacker_profile = attacker_profile
+        self._attacker_goal = self._resolve_goal(self._attacker_profile)
         self.reset_episode_state()
 
     def reset_episode_state(self) -> None:
         self._active_chain = None
+        self._blue_action_memory = []
+        self._stealth_meter = 0.0
+        self._threat_pressure = 0.0
+        self._goal_progress = 0.0
 
-    def choose_attack(self, assets: List[Dict[str, Any]], step: int) -> Dict[str, Any]:
+    def choose_attack(
+        self,
+        assets: List[Dict[str, Any]],
+        step: int,
+        defender_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        self._ingest_defender_context(defender_context)
+
         attack_frequency = float(self._difficulty_profile.get("attack_frequency", 0.84))
+        attack_frequency = clamp(attack_frequency + 0.15 * self._threat_pressure, 0.05, 1.0)
         if self._rng.random() > clamp(attack_frequency, 0.05, 1.0):
             return {
                 "scheduled": False,
@@ -81,7 +99,7 @@ class ThreatEngine:
             return chain_attack
 
         target_idx = self._select_target_idx(assets, hint_attack=None)
-        attack_type = self._sample_attack_type(assets[target_idx])
+        attack_type = self._sample_attack_type(assets[target_idx], defender_context=defender_context)
         return {
             "scheduled": True,
             "target_idx": target_idx,
@@ -97,6 +115,7 @@ class ThreatEngine:
         attack_choice: Dict[str, Any],
         segmented_finance: bool,
         honeypot_active: bool,
+        attacker_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if not attack_choice.get("scheduled", False):
             return {
@@ -134,12 +153,26 @@ class ThreatEngine:
             "zero_day": False,
             "notes": str(attack_choice.get("notes", "")),
             "chain": dict(attack_choice.get("chain", {})),
+            "attacker_goal": self._attacker_goal,
         }
 
         if asset["isolated"]:
             log["notes"] = "Target was isolated; attack impact was reduced."
 
         success_probability = self._success_probability(asset=asset, attack_type=attack_type)
+
+        ctx = attacker_context or {}
+        success_probability += self._goal_attack_bonus(attack_type)
+        success_probability += float(ctx.get("auth_compromised_bonus", 0.0)) * (
+            1.0 if attack_type in {"credential_theft", "lateral_movement", "privilege_escalation"} else 0.2
+        )
+        success_probability += float(ctx.get("finance_compromised_bonus", 0.0)) * (
+            1.0 if attack_type == "data_exfiltration" else 0.25
+        )
+        success_probability += float(ctx.get("backup_disruption_bonus", 0.0)) * (
+            1.0 if attack_type in {"ransomware_attempt", "lateral_movement"} else 0.2
+        )
+
         success_probability *= float(self._difficulty_profile.get("exploit_success_multiplier", 1.0))
 
         zero_day = self._rng.random() < float(self._difficulty_profile.get("zero_day_chance", 0.06))
@@ -178,6 +211,21 @@ class ThreatEngine:
         )
         log["chain"] = chain_outcome
 
+        stealth_before = self._stealth_meter
+        self._update_hidden_state(
+            attack_type=attack_type,
+            success=success,
+            stealth=bool(log["stealth"]),
+            defender_action=str((attacker_context or {}).get("last_blue_action", "")),
+        )
+        log["stealth_meter"] = float(clamp(self._stealth_meter, 0.0, 1.0))
+        log["threat_pressure"] = float(clamp(self._threat_pressure, 0.0, 1.0))
+        log["stealth_buildup"] = float(self._stealth_meter - stealth_before)
+        log["goal_progress"] = float(clamp(self._goal_progress, 0.0, 1.0))
+        pivot_reason = self._get_pivot_reason()
+        if pivot_reason:
+            log["pivot"] = pivot_reason
+
         self._sync_asset_legacy_fields(asset)
         return log
 
@@ -210,7 +258,7 @@ class ThreatEngine:
 
         templates = self._attacker_profile.get("chain_templates", [])
         if not isinstance(templates, list) or not templates:
-            return None
+            templates = self._default_goal_templates()
 
         stages = self._rng.choice(templates)
         if not isinstance(stages, list) or not stages:
@@ -240,7 +288,11 @@ class ThreatEngine:
             "notes": "Started a structured multi-stage campaign.",
         }
 
-    def _sample_attack_type(self, asset: Dict[str, Any]) -> str:
+    def _sample_attack_type(
+        self,
+        asset: Dict[str, Any],
+        defender_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
         base_probs = {
             "phishing_email": 0.10 + (1.0 - asset["detection_level"]) * 0.08,
             "password_spray": 0.10 + asset["credential_risk"] * 0.12,
@@ -260,6 +312,45 @@ class ThreatEngine:
                 if attack_name in base_probs:
                     base_probs[attack_name] = max(0.0, base_probs[attack_name] + float(weight))
 
+        adaptation = defender_context or {}
+        repeated_action = str(adaptation.get("repeated_action", ""))
+        streak = int(adaptation.get("repeat_streak", 0))
+        finance_segmented = bool(adaptation.get("segmented_finance", False))
+        investigate_bias = sum(1 for action in self._blue_action_memory[-4:] if action == "investigate_top_alert")
+        if streak >= 2:
+            multiplier = min(0.10 * streak, 0.35)
+            if repeated_action in {"rotate_credentials", "phishing_training"}:
+                base_probs["malware_dropper"] += multiplier
+                base_probs["ransomware_attempt"] += multiplier
+            elif repeated_action in {"patch_auth_server", "patch_web_server", "patch_hr_systems"}:
+                base_probs["credential_theft"] += multiplier
+                base_probs["password_spray"] += multiplier
+            elif repeated_action == "segment_finance_database":
+                base_probs["insider_misuse"] += multiplier
+                base_probs["phishing_email"] += multiplier * 0.8
+                base_probs["credential_theft"] += multiplier
+            elif repeated_action == "investigate_top_alert":
+                base_probs["recon_scan"] -= multiplier * 0.6
+                base_probs["privilege_escalation"] += multiplier
+                base_probs["data_exfiltration"] += multiplier * 0.8
+
+        if finance_segmented:
+            base_probs["insider_misuse"] += 0.12
+            base_probs["credential_theft"] += 0.10
+            base_probs["phishing_email"] += 0.08
+            base_probs["data_exfiltration"] -= 0.08
+
+        if investigate_bias >= 2:
+            base_probs["recon_scan"] *= 0.70
+            base_probs["phishing_email"] *= 0.90
+            base_probs["privilege_escalation"] += 0.10
+            base_probs["lateral_movement"] += 0.10
+
+        if self._attacker_goal == "stealth_persistence" and self._stealth_meter > 0.35:
+            base_probs["data_exfiltration"] += 0.12
+            base_probs["privilege_escalation"] += 0.08
+            base_probs["ransomware_attempt"] -= 0.10
+
         return self._sample_categorical(base_probs)
 
     def _select_target_idx(self, assets: List[Dict[str, Any]], hint_attack: Optional[str]) -> int:
@@ -273,6 +364,16 @@ class ThreatEngine:
             w = compute_asset_risk(asset)
             w += 0.22 if asset["name"] in priorities else 0.0
             w += 0.30 * float(asset.get("criticality", asset.get("criticality_score", 0.5))) * criticality_bias
+            w += 0.10 * float(asset.get("exposure", 0.5))
+            w += 0.10 * float(asset.get("business_value", asset.get("business_dependency", 0.5)))
+            if self._attacker_goal == "downtime":
+                w += 0.14 * float(asset.get("downtime_cost", 0.5))
+            elif self._attacker_goal == "stealth_persistence":
+                w += 0.08 * (1.0 - float(asset.get("detection_level", 0.5)))
+            elif self._attacker_goal == "takeover":
+                w += 0.10 * float(asset.get("credential_risk", 0.5))
+            elif self._attacker_goal == "sabotage":
+                w += 0.08 * float(asset.get("downtime_cost", 0.5))
 
             backup_status = float(asset.get("backup_status", asset.get("backup_health", 1.0)))
             if hint_attack == "ransomware_attempt":
@@ -423,3 +524,129 @@ class ThreatEngine:
             if pick <= cum:
                 return k
         return list(probs.keys())[-1]
+
+    def _resolve_goal(self, attacker_profile: Any) -> str:
+        if isinstance(attacker_profile, dict):
+            explicit_goal = str(attacker_profile.get("goal", "")).strip().lower()
+            if explicit_goal:
+                return explicit_goal
+            name = str(attacker_profile.get("name", "")).lower()
+        else:
+            name = str(attacker_profile or "").lower()
+        if "ransomware" in name:
+            return "downtime"
+        if "apt" in name:
+            return "stealth_persistence"
+        if "credential" in name:
+            return "takeover"
+        if "insider" in name:
+            return "sabotage"
+        return "balanced"
+
+    def _goal_attack_bonus(self, attack_type: str) -> float:
+        if self._attacker_goal == "downtime":
+            if attack_type == "ransomware_attempt":
+                return 0.08
+            if attack_type in {"lateral_movement", "malware_dropper"}:
+                return 0.04
+        elif self._attacker_goal == "stealth_persistence":
+            if attack_type in {"recon_scan", "malware_dropper", "privilege_escalation", "data_exfiltration"}:
+                return 0.05
+            if attack_type == "ransomware_attempt":
+                return -0.04
+        elif self._attacker_goal == "takeover":
+            if attack_type in {"phishing_email", "password_spray", "credential_theft", "privilege_escalation"}:
+                return 0.06
+        elif self._attacker_goal == "sabotage":
+            if attack_type in {"insider_misuse", "ransomware_attempt", "malware_dropper"}:
+                return 0.06
+        elif self._attacker_goal == "broad_disruption":
+            if attack_type in {"malware_dropper", "phishing_email", "password_spray", "lateral_movement"}:
+                return 0.05
+        return 0.0
+
+    def _default_goal_templates(self) -> List[List[str]]:
+        if self._attacker_goal == "downtime":
+            return [
+                ["recon_scan", "credential_theft", "lateral_movement", "ransomware_attempt"],
+                ["malware_dropper", "lateral_movement", "ransomware_attempt"],
+            ]
+        if self._attacker_goal == "stealth_persistence":
+            return [
+                ["recon_scan", "malware_dropper", "privilege_escalation", "data_exfiltration"],
+                ["recon_scan", "credential_theft", "lateral_movement", "data_exfiltration"],
+            ]
+        if self._attacker_goal == "takeover":
+            return [
+                ["phishing_email", "credential_theft", "privilege_escalation", "lateral_movement"],
+                ["password_spray", "credential_theft", "privilege_escalation"],
+            ]
+        if self._attacker_goal == "sabotage":
+            return [
+                ["insider_misuse", "credential_theft", "privilege_escalation", "ransomware_attempt"],
+                ["insider_misuse", "lateral_movement", "data_exfiltration"],
+            ]
+        if self._attacker_goal == "broad_disruption":
+            return [
+                ["recon_scan", "malware_dropper", "lateral_movement"],
+                ["password_spray", "credential_theft", "malware_dropper"],
+            ]
+        return [["recon_scan", "credential_theft", "lateral_movement"]]
+
+    def _ingest_defender_context(self, defender_context: Optional[Dict[str, Any]]) -> None:
+        if not defender_context:
+            self._threat_pressure = clamp(self._threat_pressure * 0.99, 0.0, 1.0)
+            return
+
+        action = str(defender_context.get("last_blue_action", "")).strip()
+        if action:
+            self._blue_action_memory.append(action)
+            if len(self._blue_action_memory) > 16:
+                self._blue_action_memory = self._blue_action_memory[-16:]
+
+        # Investigations reduce latent stealth pressure before attack selection.
+        if action == "investigate_top_alert":
+            self._stealth_meter = clamp(self._stealth_meter - 0.12, 0.0, 1.0)
+            self._threat_pressure = clamp(self._threat_pressure - 0.05, 0.0, 1.0)
+        elif action == "increase_monitoring":
+            self._stealth_meter = clamp(self._stealth_meter - 0.06, 0.0, 1.0)
+
+    def _update_hidden_state(self, *, attack_type: str, success: bool, stealth: bool, defender_action: str) -> None:
+        stealth_gain = 0.0
+        pressure_gain = 0.0
+
+        if attack_type in {"recon_scan", "credential_theft", "privilege_escalation", "lateral_movement"}:
+            stealth_gain += 0.04
+        if stealth:
+            stealth_gain += 0.08
+        if success:
+            pressure_gain += 0.05
+            if attack_type in {"credential_theft", "lateral_movement", "ransomware_attempt", "data_exfiltration"}:
+                pressure_gain += 0.04
+
+        if defender_action == "investigate_top_alert":
+            stealth_gain -= 0.10
+            pressure_gain -= 0.03
+        elif defender_action == "increase_monitoring":
+            stealth_gain -= 0.05
+
+        if self._attacker_goal == "stealth_persistence":
+            stealth_gain *= 1.15
+        elif self._attacker_goal == "downtime":
+            pressure_gain *= 1.20
+
+        self._stealth_meter = clamp(self._stealth_meter + stealth_gain, 0.0, 1.0)
+        self._threat_pressure = clamp(self._threat_pressure + pressure_gain, 0.0, 1.0)
+        self._goal_progress = clamp(self._goal_progress + max(0.0, pressure_gain), 0.0, 1.0)
+
+    def _get_pivot_reason(self) -> str:
+        if not self._blue_action_memory:
+            return ""
+        recent = self._blue_action_memory[-4:]
+        if recent.count("patch_auth_server") >= 2:
+            return "Blue repeatedly patched auth; RED pivoted toward phishing and credential theft."
+        if recent.count("segment_finance_database") >= 1:
+            return "Finance segmentation detected; RED pivoted to insider/web/auth paths."
+        if recent.count("investigate_top_alert") >= 2:
+            return "Frequent investigations observed; RED reduced noise and shifted to stealthier tactics."
+        return ""

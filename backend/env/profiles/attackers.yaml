@@ -1,6 +1,7 @@
 attackers:
   ransomware_gang:
     description: Aggressive disruption actor focused on encryption and downtime.
+    goal: downtime
     attack_bias:
       lateral_movement: 0.22
       ransomware_attempt: 0.28
@@ -16,6 +17,7 @@ attackers:
       - [recon_scan, malware_dropper, lateral_movement, ransomware_attempt]
   credential_thief:
     description: Identity-centric attacker abusing authentication controls.
+    goal: takeover
     attack_bias:
       phishing_email: 0.26
       password_spray: 0.24
@@ -31,6 +33,7 @@ attackers:
       - [password_spray, credential_theft, data_exfiltration]
   silent_apt:
     description: Stealth-focused actor prioritizing persistence and exfiltration.
+    goal: stealth_persistence
     attack_bias:
       recon_scan: 0.20
       malware_dropper: 0.12
@@ -46,6 +49,7 @@ attackers:
       - [recon_scan, credential_theft, lateral_movement, data_exfiltration]
   insider_saboteur:
     description: Abusive insider actor with privileged misuse potential.
+    goal: sabotage
     attack_bias:
       insider_misuse: 0.30
       credential_theft: 0.20
@@ -61,6 +65,7 @@ attackers:
       - [insider_misuse, lateral_movement, data_exfiltration]
   botnet:
     description: Noisy distributed attacker focused on broad compromise attempts.
+    goal: broad_disruption
     attack_bias:
       recon_scan: 0.18
       phishing_email: 0.14

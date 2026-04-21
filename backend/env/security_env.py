@@ -78,6 +78,14 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         self.honeypot_timer = 0
         self.training_mode = True
         self.previous_action_name = "reset"
+        self.pending_effects: List[Dict[str, Any]] = []
+        self.action_cooldowns: Dict[str, int] = {}
+        self.defender_budget_max = 0.32
+        self.defender_budget_remaining = 0.32
+        self.credential_reset_friction_turns = 0
+        self.recent_actions: List[str] = []
+        self.current_alerts: List[Dict[str, Any]] = []
+        self.attack_pressure = {"auth": 0.0, "finance": 0.0, "backup": 0.0}
 
         self.default_profile_selection = {
             "scenario": scenario,
@@ -205,6 +213,10 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
                     "backup_status": float(np.clip(backup_status, 0.0, 1.0)),
                     "criticality": float(np.clip(criticality, 0.0, 1.0)),
                     "business_dependency": float(np.clip(dependency, 0.0, 1.0)),
+                    "downtime_cost": float(np.clip(profile.get("downtime_cost", dependency), 0.0, 1.0)),
+                    "patch_speed": float(np.clip(profile.get("patch_speed", 0.5), 0.0, 1.0)),
+                    "exposure": float(np.clip(profile.get("exposure", 0.5), 0.0, 1.0)),
+                    "business_value": float(np.clip(profile.get("business_value", dependency), 0.0, 1.0)),
                     # Backward-compat aliases consumed by existing reward/risk logic.
                     "criticality_score": float(np.clip(criticality, 0.0, 1.0)),
                     "backup_health": float(np.clip(backup_status, 0.0, 1.0)),
@@ -248,6 +260,15 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         self.current_step = 0
         self.segmented_finance = False
         self.honeypot_timer = 0
+        self.pending_effects = []
+        self.action_cooldowns = {}
+        budget_label = str(self.runtime_profiles.scenario.get("budget", "medium"))
+        self.defender_budget_max = {"high": 0.42, "medium": 0.32, "constrained": 0.24}.get(budget_label, 0.32)
+        self.defender_budget_remaining = self.defender_budget_max
+        self.credential_reset_friction_turns = 0
+        self.recent_actions = []
+        self.current_alerts = []
+        self.attack_pressure = {"auth": 0.0, "finance": 0.0, "backup": 0.0}
         self.episode_metrics = EpisodeMetrics()
         self.replay = []
         self.events = []
@@ -277,19 +298,55 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         assert self.action_space.contains(action), f"invalid action: {action}"
         self.current_step += 1
 
+        self.defender_budget_remaining = self.defender_budget_max
+        for key in list(self.action_cooldowns.keys()):
+            self.action_cooldowns[key] = max(0, int(self.action_cooldowns[key]) - 1)
+        delayed_effect_events = self._apply_pending_effects()
+        if self.credential_reset_friction_turns > 0:
+            self.credential_reset_friction_turns -= 1
+
         assets_prev = copy.deepcopy(self.assets)
-        action_name, action_cost = self._apply_blue_action(action)
+        action_name, action_cost, blue_action_notes = self._apply_blue_action(action)
+        self.recent_actions.append(action_name)
+        if len(self.recent_actions) > 8:
+            self.recent_actions = self.recent_actions[-8:]
 
         if self.honeypot_timer > 0:
             self.honeypot_timer -= 1
 
-        attack_choice = self.threat_engine.choose_attack(self.assets, step=self.current_step)
+        repeated_action = self.recent_actions[-1] if self.recent_actions else ""
+        repeat_streak = 0
+        for prev_action in reversed(self.recent_actions):
+            if prev_action == repeated_action:
+                repeat_streak += 1
+            else:
+                break
+
+        attack_choice = self.threat_engine.choose_attack(
+            self.assets,
+            step=self.current_step,
+            defender_context={
+                "repeated_action": repeated_action,
+                "repeat_streak": repeat_streak,
+                "last_blue_action": action_name,
+                "segmented_finance": bool(self.segmented_finance),
+                "recent_blue_actions": list(self.recent_actions[-6:]),
+            },
+        )
         red_log = self.threat_engine.apply_attack(
             assets=self.assets,
             attack_choice=attack_choice,
             segmented_finance=self.segmented_finance,
             honeypot_active=self.honeypot_timer > 0,
+            attacker_context={
+                "auth_compromised_bonus": float(self.attack_pressure.get("auth", 0.0)),
+                "finance_compromised_bonus": float(self.attack_pressure.get("finance", 0.0)),
+                "backup_disruption_bonus": float(self.attack_pressure.get("backup", 0.0)),
+                "last_blue_action": action_name,
+            },
         )
+        cascade_events = self._apply_cascading_effects(red_log)
+        alert_events = self._generate_alerts(red_log)
         self.recent_red_logs.append(copy.deepcopy(red_log))
         if len(self.recent_red_logs) > 12:
             self.recent_red_logs = self.recent_red_logs[-12:]
@@ -337,6 +394,38 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
             red_log=red_log,
             chain_context=chain_context,
         )
+        turn_events.extend(delayed_effect_events)
+        turn_events.extend(blue_action_notes)
+        turn_events.extend(cascade_events)
+        turn_events.extend(alert_events)
+        if red_log.get("pivot"):
+            turn_events.append(
+                {
+                    "turn": self.current_step,
+                    "actor": "red",
+                    "event_type": "attacker_pivot",
+                    "target": str(red_log.get("target", "network")),
+                    "success": True,
+                    "details": {"pivot": red_log.get("pivot", "")},
+                    "summary": str(red_log.get("pivot", "")),
+                }
+            )
+        if "stealth_buildup" in red_log:
+            turn_events.append(
+                {
+                    "turn": self.current_step,
+                    "actor": "red",
+                    "event_type": "latent_threat",
+                    "target": "network",
+                    "success": bool(red_log.get("success", False)),
+                    "details": {
+                        "stealth_meter": red_log.get("stealth_meter", 0.0),
+                        "threat_pressure": red_log.get("threat_pressure", 0.0),
+                        "stealth_buildup": red_log.get("stealth_buildup", 0.0),
+                    },
+                    "summary": "RED latent pressure updated through stealth operations.",
+                }
+            )
 
         intelligence_payload: Dict[str, Any] = {
             "enabled": bool(self.runtime_controls["intelligence_enabled"]),
@@ -430,6 +519,9 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
                 "events": turn_events,
                 "narrative": narrative,
                 "intelligence": intelligence_payload,
+                "budget_remaining": self.defender_budget_remaining,
+                "cooldowns": copy.deepcopy(self.action_cooldowns),
+                "alerts": copy.deepcopy(self.current_alerts),
             }
         )
 
@@ -448,40 +540,116 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
 
         return False, "active"
 
-    def _apply_blue_action(self, action: int) -> Tuple[str, float]:
+    def _apply_blue_action(self, action: int) -> Tuple[str, float, List[Dict[str, Any]]]:
         action_name = ACTION_NAMES[action]
         recovery_speed = float(self.runtime_profiles.scenario.get("recovery_speed", 0.55))
+        notes: List[Dict[str, Any]] = []
+
+        action_costs = {
+            "do_nothing": 0.02,
+            "patch_hr_systems": 0.10,
+            "patch_web_server": 0.10,
+            "patch_auth_server": 0.12,
+            "rotate_credentials": 0.18,
+            "isolate_suspicious_host": 0.14,
+            "increase_monitoring": 0.12,
+            "restore_backup": 0.20,
+            "deploy_honeypot": 0.09,
+            "phishing_training": 0.08,
+            "investigate_top_alert": 0.10,
+            "segment_finance_database": 0.11,
+        }
+
+        requested_cost = float(action_costs.get(action_name, 0.0))
+        if requested_cost > self.defender_budget_remaining:
+            notes.append(
+                {
+                    "turn": self.current_step,
+                    "actor": "blue",
+                    "event_type": "budget_blocked",
+                    "target": "network",
+                    "success": False,
+                    "details": {
+                        "requested_action": action_name,
+                        "requested_cost": requested_cost,
+                        "budget_remaining": self.defender_budget_remaining,
+                    },
+                    "summary": f"Blue could not execute {action_name}; per-turn budget was exhausted.",
+                }
+            )
+            return "do_nothing", 0.02, notes
+
+        major_actions = {"rotate_credentials", "segment_finance_database", "restore_backup", "investigate_top_alert"}
+        if action_name in major_actions and self.action_cooldowns.get(action_name, 0) > 0:
+            notes.append(
+                {
+                    "turn": self.current_step,
+                    "actor": "blue",
+                    "event_type": "cooldown_blocked",
+                    "target": "network",
+                    "success": False,
+                    "details": {
+                        "requested_action": action_name,
+                        "cooldown_remaining": self.action_cooldowns.get(action_name, 0),
+                    },
+                    "summary": f"Blue attempted {action_name}, but the action is on cooldown.",
+                }
+            )
+            return "do_nothing", 0.02, notes
+
+        self.defender_budget_remaining = max(0.0, self.defender_budget_remaining - requested_cost)
+        if action_name in major_actions:
+            self.action_cooldowns[action_name] = 2
 
         def patch(name: str) -> None:
             asset = self._find_asset(name)
-            asset["patch_level"] = float(np.clip(asset["patch_level"] + (0.20 + 0.12 * recovery_speed), 0.0, 1.0))
+            patch_speed = float(asset.get("patch_speed", 0.5))
+            asset["patch_level"] = float(np.clip(asset["patch_level"] + (0.10 + 0.16 * recovery_speed * patch_speed), 0.0, 1.0))
             asset["infected"] = False
 
         if action == 0:
-            return action_name, 0.02
+            return action_name, requested_cost, notes
         if action == 1:
-            patch("HR Systems")
-            return action_name, 0.10
+            delay = int(self._rng.integers(1, 3))
+            self.pending_effects.append({"due_turn": self.current_step + delay, "effect": "patch", "target": "HR Systems"})
+            notes.append(self._delayed_note(action_name, "HR Systems", delay))
+            return action_name, requested_cost, notes
         if action == 2:
-            patch("Web Server")
-            return action_name, 0.10
+            delay = int(self._rng.integers(1, 3))
+            self.pending_effects.append({"due_turn": self.current_step + delay, "effect": "patch", "target": "Web Server"})
+            notes.append(self._delayed_note(action_name, "Web Server", delay))
+            return action_name, requested_cost, notes
         if action == 3:
-            patch("Auth Server")
-            return action_name, 0.12
+            delay = int(self._rng.integers(1, 3))
+            self.pending_effects.append({"due_turn": self.current_step + delay, "effect": "patch", "target": "Auth Server"})
+            notes.append(self._delayed_note(action_name, "Auth Server", delay))
+            return action_name, requested_cost, notes
         if action == 4:
             for asset in self.assets:
-                asset["credential_risk"] = float(np.clip(asset["credential_risk"] - 0.20, 0.0, 1.0))
-            return action_name, 0.18
+                asset["credential_risk"] = float(np.clip(asset["credential_risk"] - 0.15, 0.0, 1.0))
+            self.credential_reset_friction_turns = 1
+            notes.append(
+                {
+                    "turn": self.current_step,
+                    "actor": "blue",
+                    "event_type": "defense_friction",
+                    "target": "network",
+                    "success": True,
+                    "details": {"source_action": action_name, "duration_turns": 1},
+                    "summary": "Credential rotation introduced temporary operational friction for one turn.",
+                }
+            )
+            return action_name, requested_cost + 0.04, notes
         if action == 5:
             target = max(self.assets, key=lambda a: (float(a["infected"]), float(a["credential_risk"])))
             target["isolated"] = True
             target["uptime_status"] = False
             target["uptime"] = float(np.clip(target.get("uptime", 1.0) - 0.20, 0.0, 1.0))
-            return action_name, 0.14
+            return action_name, requested_cost, notes
         if action == 6:
             for asset in self.assets:
                 asset["detection_level"] = float(np.clip(asset["detection_level"] + 0.15, 0.0, 1.0))
-            return action_name, 0.12
+            return action_name, requested_cost, notes
         if action == 7:
             restore_gain = 0.15 + 0.15 * recovery_speed
             for asset in self.assets:
@@ -491,28 +659,250 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
                     asset["compromised"] = False
                 asset["backup_status"] = float(np.clip(asset["backup_status"] + restore_gain, 0.0, 1.0))
                 asset["uptime"] = float(np.clip(asset.get("uptime", 1.0) + restore_gain, 0.0, 1.0))
-            return action_name, 0.20
+            self.attack_pressure["backup"] = max(0.0, float(self.attack_pressure.get("backup", 0.0)) - 0.08)
+            return action_name, requested_cost, notes
         if action == 8:
             self.honeypot_timer = 5
-            return action_name, 0.09
+            return action_name, requested_cost, notes
         if action == 9:
             email = self._find_asset("Employee Email")
             email["credential_risk"] = float(np.clip(email["credential_risk"] - 0.25, 0.0, 1.0))
             email["detection_level"] = float(np.clip(email["detection_level"] + 0.12, 0.0, 1.0))
-            return action_name, 0.08
+            return action_name, requested_cost, notes
         if action == 10:
-            target = max(self.assets, key=lambda a: float(a["credential_risk"]) + float(a["detection_level"]))
-            target["infected"] = False
-            target["compromised"] = False
-            target["credential_risk"] = float(np.clip(target["credential_risk"] - 0.10, 0.0, 1.0))
-            return action_name, 0.10
+            if self.current_alerts:
+                target_alert = sorted(self.current_alerts, key=lambda a: float(a.get("severity_score", 0.0)), reverse=True)[0]
+                if bool(target_alert.get("true_positive", False)):
+                    target = self._find_asset(str(target_alert.get("target", "Auth Server")))
+                    target["infected"] = False
+                    target["compromised"] = False
+                    target["credential_risk"] = float(np.clip(target["credential_risk"] - 0.14, 0.0, 1.0))
+                    notes.append(
+                        {
+                            "turn": self.current_step,
+                            "actor": "blue",
+                            "event_type": "alert_investigated",
+                            "target": target["name"],
+                            "success": True,
+                            "details": {"severity": target_alert.get("severity", "high"), "true_positive": True},
+                            "summary": f"Blue investigated a {target_alert.get('severity', 'high')} alert and contained compromise on {target['name']}.",
+                        }
+                    )
+                else:
+                    target = self._find_asset(str(target_alert.get("target", "SOC Monitoring Console")))
+                    target["detection_level"] = float(np.clip(target["detection_level"] + 0.06, 0.0, 1.0))
+                    notes.append(
+                        {
+                            "turn": self.current_step,
+                            "actor": "blue",
+                            "event_type": "alert_investigated",
+                            "target": target["name"],
+                            "success": False,
+                            "details": {"severity": target_alert.get("severity", "low"), "true_positive": False},
+                            "summary": "Blue investigated a false-positive alert; tuning improved but no threat was removed.",
+                        }
+                    )
+                self.current_alerts = [a for a in self.current_alerts if a.get("id") != target_alert.get("id")]
+            else:
+                target = max(self.assets, key=lambda a: float(a["credential_risk"]) + float(a["detection_level"]))
+                target["infected"] = False
+                target["compromised"] = False
+                target["credential_risk"] = float(np.clip(target["credential_risk"] - 0.10, 0.0, 1.0))
+            return action_name, requested_cost, notes
         if action == 11:
-            self.segmented_finance = True
-            finance = self._find_asset("Finance Database")
-            finance["isolated"] = True
-            return action_name, 0.11
+            self.pending_effects.append({"due_turn": self.current_step + 1, "effect": "segment_finance", "target": "Finance Database"})
+            notes.append(self._delayed_note(action_name, "Finance Database", 1))
+            return action_name, requested_cost, notes
 
-        return action_name, 0.0
+        return action_name, 0.0, notes
+
+    def _delayed_note(self, action_name: str, target: str, delay: int) -> Dict[str, Any]:
+        return {
+            "turn": self.current_step,
+            "actor": "blue",
+            "event_type": "delayed_action_queued",
+            "target": target,
+            "success": True,
+            "details": {"action": action_name, "delay_turns": delay},
+            "summary": f"Blue queued {action_name} on {target}; effect will apply in {delay} turn(s).",
+        }
+
+    def _apply_pending_effects(self) -> List[Dict[str, Any]]:
+        events: List[Dict[str, Any]] = []
+        remaining: List[Dict[str, Any]] = []
+        for effect in self.pending_effects:
+            if int(effect.get("due_turn", 10**9)) > self.current_step:
+                remaining.append(effect)
+                continue
+
+            effect_type = str(effect.get("effect", ""))
+            target_name = str(effect.get("target", "network"))
+            if effect_type == "patch":
+                target = self._find_asset(target_name)
+                patch_speed = float(target.get("patch_speed", 0.5))
+                recovery_speed = float(self.runtime_profiles.scenario.get("recovery_speed", 0.55))
+                target["patch_level"] = float(np.clip(target["patch_level"] + (0.10 + 0.16 * recovery_speed * patch_speed), 0.0, 1.0))
+                target["infected"] = False
+                events.append(
+                    {
+                        "turn": self.current_step,
+                        "actor": "blue",
+                        "event_type": "delayed_action_applied",
+                        "target": target_name,
+                        "success": True,
+                        "details": {"effect": "patch"},
+                        "summary": f"Queued patch completed on {target_name}.",
+                    }
+                )
+            elif effect_type == "segment_finance":
+                self.segmented_finance = True
+                finance = self._find_asset("Finance Database")
+                finance["isolated"] = True
+                events.append(
+                    {
+                        "turn": self.current_step,
+                        "actor": "blue",
+                        "event_type": "delayed_action_applied",
+                        "target": "Finance Database",
+                        "success": True,
+                        "details": {"effect": "segment_finance"},
+                        "summary": "Finance segmentation is now active.",
+                    }
+                )
+
+        self.pending_effects = remaining
+        return events
+
+    def _apply_cascading_effects(self, red_log: Dict[str, Any]) -> List[Dict[str, Any]]:
+        events: List[Dict[str, Any]] = []
+        target_name = str(red_log.get("target", ""))
+        success = bool(red_log.get("success", False))
+        if not success:
+            self.attack_pressure["auth"] = max(0.0, self.attack_pressure["auth"] - 0.02)
+            self.attack_pressure["finance"] = max(0.0, self.attack_pressure["finance"] - 0.02)
+            self.attack_pressure["backup"] = max(0.0, self.attack_pressure["backup"] - 0.02)
+            return events
+
+        if target_name == "Auth Server":
+            for asset in self.assets:
+                asset["credential_risk"] = float(np.clip(asset["credential_risk"] + 0.05, 0.0, 1.0))
+            self.attack_pressure["auth"] = min(0.24, self.attack_pressure["auth"] + 0.07)
+            events.append(
+                {
+                    "turn": self.current_step,
+                    "actor": "system",
+                    "event_type": "cascade_effect",
+                    "target": "network",
+                    "success": True,
+                    "details": {"source": "Auth Server", "effect": "credential_theft_and_lateral_pressure"},
+                    "summary": "Auth compromise increased credential theft and lateral movement pressure across assets.",
+                }
+            )
+
+        if target_name == "Finance Database":
+            self.attack_pressure["finance"] = min(0.24, self.attack_pressure["finance"] + 0.08)
+            events.append(
+                {
+                    "turn": self.current_step,
+                    "actor": "system",
+                    "event_type": "cascade_effect",
+                    "target": "Finance Database",
+                    "success": True,
+                    "details": {"source": "Finance Database", "effect": "exfiltration_pressure"},
+                    "summary": "Finance compromise increased probability of successful exfiltration attempts.",
+                }
+            )
+
+        if target_name == "Backup Infrastructure":
+            for asset in self.assets:
+                asset["backup_status"] = float(np.clip(asset.get("backup_status", 1.0) - 0.08, 0.0, 1.0))
+            self.attack_pressure["backup"] = min(0.24, self.attack_pressure["backup"] + 0.08)
+            events.append(
+                {
+                    "turn": self.current_step,
+                    "actor": "system",
+                    "event_type": "cascade_effect",
+                    "target": "network",
+                    "success": True,
+                    "details": {"source": "Backup Infrastructure", "effect": "weakened_recovery"},
+                    "summary": "Backup disruption weakened organization-wide recovery resilience.",
+                }
+            )
+
+        return events
+
+    def _generate_alerts(self, red_log: Dict[str, Any]) -> List[Dict[str, Any]]:
+        events: List[Dict[str, Any]] = []
+        self.current_alerts = []
+
+        detection_maturity = float(self.runtime_profiles.scenario.get("detection_maturity", 0.55))
+        success = bool(red_log.get("success", False))
+        attack = str(red_log.get("attack", ""))
+        target = str(red_log.get("target", "network"))
+
+        if attack != "no_attack":
+            base_score = 0.45 + (0.30 if success else 0.12)
+            if attack in {"ransomware_attempt", "lateral_movement", "data_exfiltration", "privilege_escalation"}:
+                base_score += 0.20
+            base_score += 0.10 * (1.0 - detection_maturity)
+            severity_score = float(np.clip(base_score, 0.0, 1.0))
+            severity = (
+                "critical"
+                if severity_score >= 0.85
+                else "high"
+                if severity_score >= 0.65
+                else "medium"
+                if severity_score >= 0.45
+                else "low"
+            )
+            alert = {
+                "id": f"a{self.current_step}_0",
+                "target": target,
+                "severity": severity,
+                "severity_score": severity_score,
+                "true_positive": True,
+                "attack": attack,
+            }
+            self.current_alerts.append(alert)
+            events.append(
+                {
+                    "turn": self.current_step,
+                    "actor": "sensor",
+                    "event_type": "alert_generated",
+                    "target": target,
+                    "success": True,
+                    "details": alert,
+                    "summary": f"{severity.capitalize()} alert generated for {target} ({attack}).",
+                }
+            )
+
+        false_positive_chance = float(np.clip(0.25 - 0.15 * detection_maturity, 0.04, 0.30))
+        if self._rng.random() < false_positive_chance:
+            fp_target = self.assets[int(self._rng.integers(0, len(self.assets)))]["name"]
+            fp_score = float(np.clip(0.30 + self._rng.uniform(0.0, 0.35), 0.0, 1.0))
+            fp_severity = "medium" if fp_score > 0.5 else "low"
+            false_alert = {
+                "id": f"a{self.current_step}_fp",
+                "target": fp_target,
+                "severity": fp_severity,
+                "severity_score": fp_score,
+                "true_positive": False,
+                "attack": "noise",
+            }
+            self.current_alerts.append(false_alert)
+            events.append(
+                {
+                    "turn": self.current_step,
+                    "actor": "sensor",
+                    "event_type": "alert_noise",
+                    "target": fp_target,
+                    "success": True,
+                    "details": false_alert,
+                    "summary": f"{fp_severity.capitalize()} false-positive alert surfaced on {fp_target}.",
+                }
+            )
+
+        return events
 
     def _find_asset(self, name: str) -> Dict[str, Any]:
         for asset in self.assets:
@@ -594,10 +984,18 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
                 "recovery_speed": self.runtime_profiles.scenario.get("recovery_speed", 0.55),
                 "critical_assets": self.runtime_profiles.scenario.get("critical_assets", []),
                 "attack_priorities": self.runtime_profiles.scenario.get("attack_priorities", []),
+                "budget": self.runtime_profiles.scenario.get("budget", "medium"),
                 "strategy_mode": self.runtime_controls["strategy_mode"],
                 "action_source": self.runtime_controls["action_source"],
                 "intelligence_enabled": bool(self.runtime_controls["intelligence_enabled"]),
             },
+            "defender": {
+                "budget_max": float(self.defender_budget_max),
+                "budget_remaining": float(self.defender_budget_remaining),
+                "cooldowns": copy.deepcopy(self.action_cooldowns),
+                "pending_effects": len(self.pending_effects),
+            },
+            "alerts": copy.deepcopy(self.current_alerts),
             "intelligence": intelligence
             or {
                 "enabled": bool(self.runtime_controls["intelligence_enabled"]),

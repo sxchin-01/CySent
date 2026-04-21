@@ -306,13 +306,23 @@ def load_scenario_profile(name: str) -> Dict[str, Any]:
     for asset_name in CANONICAL_ASSET_NAMES:
         defaults = LEGACY_SCENARIO["asset_profiles"][asset_name]
         src = raw_assets.get(asset_name, defaults)
+        criticality = _clamp01(float(src.get("criticality", defaults["criticality"])))
+        business_dependency = _clamp01(float(src.get("business_dependency", defaults["business_dependency"])))
+        downtime_cost = _clamp01(float(src.get("downtime_cost", 0.45 + 0.55 * business_dependency)))
+        patch_speed = _clamp01(float(src.get("patch_speed", 0.35 + 0.55 * (1.0 - criticality))))
+        exposure = _clamp01(float(src.get("exposure", 0.30 + 0.60 * (1.0 - defaults["patch_level"][0]))))
+        business_value = _clamp01(float(src.get("business_value", business_dependency)))
         normalized_asset_profiles[asset_name] = {
             "patch_level": _coerce_range(src.get("patch_level"), defaults["patch_level"][0], defaults["patch_level"][1]),
             "detection_level": _coerce_range(src.get("detection_level"), defaults["detection_level"][0], defaults["detection_level"][1]),
             "credential_risk": _coerce_range(src.get("credential_risk"), defaults["credential_risk"][0], defaults["credential_risk"][1]),
             "backup_status": _coerce_range(src.get("backup_status"), defaults["backup_status"][0], defaults["backup_status"][1]),
-            "criticality": _clamp01(float(src.get("criticality", defaults["criticality"]))),
-            "business_dependency": _clamp01(float(src.get("business_dependency", defaults["business_dependency"]))),
+            "criticality": criticality,
+            "business_dependency": business_dependency,
+            "downtime_cost": downtime_cost,
+            "patch_speed": patch_speed,
+            "exposure": exposure,
+            "business_value": business_value,
         }
 
     detection_maturity = _clamp01(float(profile.get("detection_maturity", LEGACY_SCENARIO["detection_maturity"])))
@@ -374,6 +384,7 @@ def load_attacker_profile(name: str) -> Dict[str, Any]:
     return {
         "name": attacker_name,
         "description": str(merged.get("description", "")),
+        "goal": str(merged.get("goal", "")).strip().lower(),
         "attack_bias": normalized_bias,
         "chain_bias": _clamp01(float(merged.get("chain_bias", 0.8))),
         "stealth_modifier": max(0.5, float(merged.get("stealth_modifier", 1.0))),

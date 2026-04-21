@@ -32,16 +32,30 @@ def compute_reward(
     curr_breach = breach_rate(assets_curr)
 
     # Keep dense risk incentive but avoid overly action-centric optimization.
-    risk_term = (prev_risk - curr_risk) * 12.0
-    uptime_term = (curr_uptime - prev_uptime) * 6.0
-    breach_term = (prev_breach - curr_breach) * 8.0
+    risk_term = (prev_risk - curr_risk) * 13.0
+    uptime_term = (curr_uptime - prev_uptime) * 3.2
+    breach_term = (prev_breach - curr_breach) * 9.0
 
     # Fast recovery and prevention bonuses.
     recovered = sum(1 for p, c in zip(assets_prev, assets_curr) if (not p["uptime_status"]) and c["uptime_status"])
     cleaned = sum(1 for p, c in zip(assets_prev, assets_curr) if p["infected"] and (not c["infected"]))
-    prevention_bonus = 0.45 if (not red_log.get("success", False)) and action_name != "do_nothing" else 0.0
+    recovered_compromised = sum(1 for p, c in zip(assets_prev, assets_curr) if p["compromised"] and (not c["compromised"]))
+    infected_prev = sum(1 for a in assets_prev if a["infected"])
+    infected_curr = sum(1 for a in assets_curr if a["infected"])
+    compromised_prev = sum(1 for a in assets_prev if a["compromised"])
+    compromised_curr = sum(1 for a in assets_curr if a["compromised"])
 
-    reward = risk_term + uptime_term + breach_term + recovered * 0.9 + cleaned * 1.4 + prevention_bonus
+    chain_ctx = red_log.get("chain", {}) if isinstance(red_log.get("chain", {}), dict) else {}
+    chain_interrupted = bool(chain_ctx) and (not bool(chain_ctx.get("advance", False))) and (not bool(red_log.get("success", False)))
+
+    prevention_bonus = 0.20 if (not red_log.get("success", False)) and action_name != "do_nothing" else 0.0
+    if chain_interrupted:
+        prevention_bonus += 0.70
+
+    reward = risk_term + uptime_term + breach_term + recovered * 0.7 + cleaned * 1.2 + recovered_compromised * 1.3 + prevention_bonus
+
+    if (infected_prev + compromised_prev) > (infected_curr + compromised_curr):
+        reward += 1.0
 
     # Strong critical-asset incentives, with explicit finance protection focus.
     finance_prev = next(a for a in assets_prev if a["name"] == "Finance Database")
@@ -57,14 +71,14 @@ def compute_reward(
         reward += 0.6
 
     # Keep action nudges small; outcomes should dominate.
-    if action_name == "patch_auth_server" and auth_prev["patch_level"] < 0.75 and (not auth_prev["compromised"]):
-        reward += 1.3
-    if action_name == "rotate_credentials" and attack_type in {"phishing_email", "password_spray", "credential_theft"}:
-        reward += 1.8
-    if action_name == "segment_finance_database" and (not bool(ctx.get("segmented_finance", False))) and (not finance_prev["compromised"]):
-        reward += 1.8
-    if action_name == "investigate_top_alert" and (red_success or any(a["infected"] or a["compromised"] for a in assets_prev)):
-        reward += 0.8
+    if action_name == "patch_auth_server" and auth_prev["patch_level"] < 0.75 and (not auth_prev["compromised"]) and curr_risk < prev_risk:
+        reward += 0.35
+    if action_name == "rotate_credentials" and attack_type in {"phishing_email", "password_spray", "credential_theft"} and curr_risk < prev_risk:
+        reward += 0.45
+    if action_name == "segment_finance_database" and (not bool(ctx.get("segmented_finance", False))) and (not finance_prev["compromised"]) and curr_risk < prev_risk:
+        reward += 0.45
+    if action_name == "investigate_top_alert" and (red_success or any(a["infected"] or a["compromised"] for a in assets_prev)) and (infected_curr + compromised_curr) < (infected_prev + compromised_prev):
+        reward += 0.35
 
     # Outcome-dominant rewards.
     if (not red_success) and attack_type == "credential_theft":
@@ -78,6 +92,18 @@ def compute_reward(
     risk_delta = prev_risk - curr_risk
     if risk_delta > 0.05:
         reward += 2.5
+
+    # Delayed credit: give small credit if prior action likely enabled this prevention.
+    previous_action = str(ctx.get("previous_action", ""))
+    if (not red_success) and previous_action in {
+        "patch_auth_server",
+        "patch_web_server",
+        "rotate_credentials",
+        "segment_finance_database",
+        "investigate_top_alert",
+        "increase_monitoring",
+    }:
+        reward += 0.55
 
     # Small threat-neglect penalties (-2 to -8 range).
     if red_success and attack_type == "credential_theft":
@@ -122,9 +148,15 @@ def compute_reward(
     # Action economy and anti-reward-hacking controls.
     reward -= action_cost
 
-    previous_action = str(ctx.get("previous_action", ""))
     if previous_action == action_name and curr_risk >= prev_risk:
-        reward -= 0.18
+        reward -= 0.45
+
+    spam_sensitive = {"rotate_credentials", "patch_auth_server", "patch_web_server", "investigate_top_alert", "segment_finance_database"}
+    if previous_action == action_name and action_name in spam_sensitive:
+        if curr_risk >= prev_risk:
+            reward -= 1.0
+        if red_success:
+            reward -= 0.8
 
     # Repetition cooldown: small escalating penalties for repeated low-value actions.
     low_value_actions = {"do_nothing", "increase_monitoring", "phishing_training", "deploy_honeypot"}
@@ -154,6 +186,16 @@ def compute_reward(
     ):
         reward -= 3.5
 
+    # Risk quality: reward sustained low-risk posture and penalize latent hidden-risk growth.
+    if curr_risk < 0.25 and (not red_success):
+        reward += 0.65
+    hidden_pressure = float(red_log.get("threat_pressure", 0.0))
+    stealth_buildup = float(red_log.get("stealth_buildup", 0.0))
+    if curr_uptime > 0.90 and (hidden_pressure > 0.55 or stealth_buildup > 0.03):
+        reward -= 1.3
+    if action_name in {"investigate_top_alert", "increase_monitoring"} and stealth_buildup < 0.0:
+        reward += 0.7
+
     # Hard negative outcomes and neglect penalties.
     compromised_assets = sum(1 for a in assets_curr if a["compromised"])
     down_assets = sum(1 for a in assets_curr if not a["uptime_status"])
@@ -170,4 +212,6 @@ def compute_reward(
         else:
             reward -= 2.0
 
+    # Keep PPO-safe scale without changing signal ordering.
+    reward = max(-12.0, min(12.0, reward))
     return float(reward)
