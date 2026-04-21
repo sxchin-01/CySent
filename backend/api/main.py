@@ -37,7 +37,7 @@ class ResetRequest(BaseModel):
     difficulty: str = "medium"
     attacker: str = "legacy_default"
     strategy_mode: str = "balanced"
-    action_source: str = "ppo_ai"
+    action_source: str = "ppo_agent"
     intelligence_enabled: bool = True
 
 

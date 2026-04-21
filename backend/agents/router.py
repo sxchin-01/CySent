@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import random
 from typing import Any, Dict, Optional
 
 from backend.agents.hf_agent import HFAgent
@@ -15,6 +14,7 @@ class AgentRouter:
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         self.config = config or self._load_config()
         self.default_agent = self.config.get("default_agent", "ppo_agent")
+        self.mode = str(self.config.get("mode", os.getenv("AGENT_MODE", "hybrid"))).lower()
 
         # Initialize agents
         self.ppo_agent: Optional[PPOAgent] = None
@@ -22,9 +22,10 @@ class AgentRouter:
         self._initialize_agents()
 
         # Credit saving modes
-        self.full_llm = self.config.get("full_llm", False)
-        self.hybrid_threshold = self.config.get("hybrid_threshold", 10)  # Every N turns for hybrid
+        self.full_llm = bool(self.config.get("full_llm", False))
+        self.hybrid_threshold = int(self.config.get("hybrid_threshold", 10))  # Every N turns for hybrid
         self.turn_counter = 0
+        self.last_used_agent = "ppo_agent"
 
     def _load_config(self) -> Dict[str, Any]:
         """Load agent configuration."""
@@ -46,7 +47,7 @@ class AgentRouter:
             self.ppo_agent = None
 
         try:
-            self.hf_agent = HFAgent()
+            self.hf_agent = HFAgent(timeout=float(self.config.get("hf_timeout", os.getenv("HF_TIMEOUT", 10.0))))
         except Exception:
             self.hf_agent = None
 
@@ -69,20 +70,31 @@ class AgentRouter:
         network_risk = state.get("network_risk", 0.0)
         self.turn_counter += 1
 
-        # Check if we have a forced agent selection
-        if self.default_agent == "ppo_agent":
-            # Force PPO usage
-            use_hf = False
-        elif self.default_agent == "hf_llm_agent":
-            # Force HF usage (with fallback to PPO)
+        # Forced source selection from API/UI takes precedence.
+        if self.default_agent == "hf_llm_agent":
             use_hf = True
+        elif self.default_agent == "ppo_agent":
+            if self.mode == "full_llm" or self.full_llm:
+                use_hf = True
+            elif self.mode == "ppo_only":
+                use_hf = False
+            else:
+                # Default hybrid behavior: PPO baseline with selective HF assists.
+                use_hf = self._should_use_hf(network_risk)
         else:
-            # Use hybrid logic
             use_hf = self._should_use_hf(network_risk)
+
+        # Ensure HF prompt context includes scenario/attacker when available.
+        profile = state.get("profile", {}) if isinstance(state.get("profile", {}), dict) else {}
+        if "scenario" not in state and "scenario" in profile:
+            state = dict(state)
+            state["scenario"] = profile.get("scenario")
+            state["attacker"] = profile.get("attacker", state.get("attacker", "unknown"))
 
         if use_hf and self.hf_agent:
             try:
                 action = self.hf_agent.predict_action(state)
+                self.last_used_agent = "hf_llm_agent"
                 return action
             except Exception:
                 # Fallback to PPO on HF failure
@@ -91,24 +103,36 @@ class AgentRouter:
         # Use PPO (or fallback to random if PPO unavailable)
         if self.ppo_agent and self.ppo_agent.is_available():
             try:
+                self.last_used_agent = "ppo_agent"
                 return self.ppo_agent.predict_action(observation, deterministic=True)
             except Exception:
                 pass
 
-        # Final fallback: random action
-        return random.randint(0, 11)
+        # Final fallback: deterministic safe no-op when PPO is unavailable.
+        self.last_used_agent = "ppo_agent"
+        return 0
 
     async def predict_action_async(self, observation: Any, state: Dict[str, Any]) -> int:
         """Async version of predict_action with proper HF handling."""
         network_risk = state.get("network_risk", 0.0)
         self.turn_counter += 1
 
-        # Determine which agent to use
-        use_hf = self._should_use_hf(network_risk)
+        if self.default_agent == "hf_llm_agent":
+            use_hf = True
+        elif self.default_agent == "ppo_agent":
+            if self.mode == "full_llm" or self.full_llm:
+                use_hf = True
+            elif self.mode == "ppo_only":
+                use_hf = False
+            else:
+                use_hf = self._should_use_hf(network_risk)
+        else:
+            use_hf = self._should_use_hf(network_risk)
 
         if use_hf and self.hf_agent:
             try:
                 action = await self.hf_agent.predict_action_async(state)
+                self.last_used_agent = "hf_llm_agent"
                 return action
             except Exception:
                 # Fallback to PPO on HF failure
@@ -121,16 +145,17 @@ class AgentRouter:
                 action = await asyncio.get_event_loop().run_in_executor(
                     None, self.ppo_agent.predict_action, observation, True
                 )
+                self.last_used_agent = "ppo_agent"
                 return action
             except Exception:
                 pass
 
-        # Final fallback: random action
-        return random.randint(0, 11)
+        self.last_used_agent = "ppo_agent"
+        return 0
 
     def get_active_agent_name(self) -> str:
         """Get the name of the currently active agent for UI display."""
-        if self.default_agent == "hf_llm_agent":
+        if self.last_used_agent == "hf_llm_agent":
             return "HF LLM Defender"
         else:
             return "PPO Defender"
@@ -145,6 +170,7 @@ class AgentRouter:
 
     def set_mode(self, mode: str) -> None:
         """Set the agent mode (full_llm, hybrid, ppo_only)."""
+        self.mode = mode
         if mode == "full_llm":
             self.full_llm = True
         elif mode == "hybrid":

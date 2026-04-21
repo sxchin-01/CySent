@@ -68,7 +68,7 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         attacker: str = "legacy_default",
         intelligence_enabled: bool = True,
         strategy_mode: str = "balanced",
-        action_source: str = "ppo_ai",
+        action_source: str = "ppo_agent",
     ) -> None:
         super().__init__()
 

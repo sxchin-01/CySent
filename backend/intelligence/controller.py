@@ -22,7 +22,7 @@ ACTION_TO_ID: Dict[str, int] = {
 class IntelligenceController:
     """Action-source abstraction for PPO, heuristic, and human-manual control modes."""
 
-    def __init__(self, strategy_mode: str = "balanced", action_source: str = "ppo_ai") -> None:
+    def __init__(self, strategy_mode: str = "balanced", action_source: str = "ppo_agent") -> None:
         self.strategy_mode = strategy_mode
         self.action_source = action_source
 
@@ -49,7 +49,7 @@ class IntelligenceController:
                 "rationale": "Manual action supplied by human operator.",
             }
 
-        if source in {"heuristic_ai", "ppo_ai"}:
+        if source in {"heuristic_ai", "ppo_ai", "ppo_agent", "hf_llm_agent"}:
             choice = self._heuristic_choice(assets=assets, risk_breakdown=risk_breakdown, forecast=forecast)
             # For ppo_ai source, this is a recommendation wrapper only; external PPO action remains authoritative.
             confidence = 0.62 if source == "heuristic_ai" else 0.55

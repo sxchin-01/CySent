@@ -27,13 +27,15 @@ class HFAgent:
         model_id: Optional[str] = None,
         endpoint_url: Optional[str] = None,
         token: Optional[str] = None,
-        timeout: float = 10.0,
+        timeout: Optional[float] = None,
         max_retries: int = 3,
     ) -> None:
         self.model_id = model_id or os.getenv("HF_MODEL_ID", "microsoft/DialoGPT-medium")
         self.endpoint_url = endpoint_url or os.getenv("HF_ENDPOINT_URL")
         self.token = token or os.getenv("HF_TOKEN")
-        self.timeout = timeout
+        if timeout is None:
+            timeout = float(os.getenv("HF_TIMEOUT", "10.0"))
+        self.timeout = float(timeout)
         self.max_retries = max_retries
         self.client: Optional[InferenceClient] = None
         self._initialize_client()
@@ -108,12 +110,21 @@ Respond with ONLY the action name (one of: rotate_credentials, patch_auth_server
                         do_sample=True,
                     )
                 else:
-                    # Standard HF Inference API
-                    response = self.client.conversational(
-                        {"inputs": {"past_user_inputs": [], "generated_responses": [], "text": prompt}},
-                        parameters={"max_length": 100, "temperature": 0.1}
-                    )
-                    response = response["generated_text"]
+                    # Standard HF serverless API path.
+                    try:
+                        response = self.client.text_generation(
+                            prompt,
+                            max_new_tokens=50,
+                            temperature=0.1,
+                            do_sample=True,
+                        )
+                    except Exception:
+                        # Compatibility fallback for conversational-style providers.
+                        response = self.client.conversational(
+                            {"inputs": {"past_user_inputs": [], "generated_responses": [], "text": prompt}},
+                            parameters={"max_length": 100, "temperature": 0.1},
+                        )
+                        response = response["generated_text"]
 
                 return str(response).strip()
             except Exception as e:
@@ -136,7 +147,7 @@ Respond with ONLY the action name (one of: rotate_credentials, patch_auth_server
     async def predict_action_async(self, state: Dict[str, Any]) -> int:
         """Predict action using HF LLM asynchronously."""
         prompt = self._build_prompt(state)
-        response = await self._call_hf_api(prompt)
+        response = await asyncio.wait_for(self._call_hf_api(prompt), timeout=self.timeout)
         action_id = self._parse_action(response)
 
         if action_id is None:
