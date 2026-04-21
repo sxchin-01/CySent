@@ -56,10 +56,13 @@ class BenchmarkRequest(BaseModel):
     episodes: int = Field(default=50, ge=10, le=500)
     max_steps: int = Field(default=150, ge=25, le=1000)
     seed: int = 42
+    agents: List[str] = Field(default_factory=lambda: ["ppo", "hf_llm", "random"])
+    seeds: int = Field(default=20, ge=1, le=200)
+    stress: str = "default"
     baseline_model: str = "backend/train/artifacts/cysent_ppo.zip"
     tuned_model: str = "backend/train/artifacts/best_model/best_model.zip"
     cloud_model: Optional[str] = None
-    output: str = "backend/train/artifacts/benchmark_summary.json"
+    output: str = "backend/train/artifacts/benchmark/benchmark_summary.json"
 
 
 class CySentRuntime:
@@ -255,6 +258,9 @@ def run_benchmark(req: BenchmarkRequest) -> Dict[str, Any]:
         episodes=req.episodes,
         max_steps=req.max_steps,
         seed=req.seed,
+        agents=req.agents,
+        seeds=req.seeds,
+        stress=req.stress,
         baseline_model=req.baseline_model,
         tuned_model=req.tuned_model,
         cloud_model=req.cloud_model,
