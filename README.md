@@ -140,6 +140,11 @@ python scripts/build_cysent_dataset.py --output datasets/cysent_action_dataset.j
 python scripts/test_hf_agent.py --base-model Qwen/Qwen2.5-3B-Instruct --adapter outputs/cysent_unsloth_adapter --state "risk=0.72, attack=phishing_email, target=auth server, compromised=1, credential_exposure=0.81"
 ```
 
+Use a trained adapter at runtime:
+1. Set `HF_MODEL_ID` to the Qwen base model or your merged HF Hub repo id.
+2. Set `HF_ADAPTER_PATH` to a local LoRA folder, a merged local model folder, or a HF Hub adapter repo id.
+3. Keep `AGENT_MODE=hybrid` and select `hf_llm_agent`; PPO remains the fallback if the adapter fails or times out.
+
 Notes:
 1. Dataset rows are generated in CySent instruction format: `instruction`, `input`, `output`.
 2. Output action labels are constrained to current CySent valid action names.

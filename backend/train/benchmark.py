@@ -16,6 +16,13 @@ from backend.env.security_env import CySentSecurityEnv
 from backend.train.evaluate import evaluate
 
 
+def _normalize_agent_name(agent: str) -> str:
+    normalized = agent.strip().lower()
+    if normalized == "hf_llm":
+        return "hf_llm_agent"
+    return normalized
+
+
 def _load_experiment_registry(artifacts_root: Path) -> List[Dict[str, Any]]:
     path = artifacts_root / "experiment_runs.json"
     if not path.exists():
@@ -468,9 +475,9 @@ def _build_agent_benchmark(
     output_path: Path,
     tuned_model: str,
 ) -> Dict[str, Any]:
-    requested_agents = [a.strip().lower() for a in agents if a.strip()]
+    requested_agents = [_normalize_agent_name(a) for a in agents if a.strip()]
     if not requested_agents:
-        requested_agents = ["ppo", "hf_llm", "random"]
+        requested_agents = ["ppo", "hf_llm_agent", "random"]
 
     scenarios = _stress_suite(stress)
     seed_schedule = [seed + i for i in range(seeds)]
@@ -480,7 +487,7 @@ def _build_agent_benchmark(
     if "ppo" in requested_agents and Path(tuned_model).exists():
         ppo_model = PPO.load(tuned_model)
 
-    router = AgentRouter() if "hf_llm" in requested_agents else None
+    router = AgentRouter() if "hf_llm_agent" in requested_agents else None
     hf_available = bool(router and router.is_agent_available("hf_llm_agent"))
     if router and hf_available:
         router.switch_agent("hf_llm_agent")
@@ -490,8 +497,8 @@ def _build_agent_benchmark(
         if agent == "ppo" and ppo_model is None:
             rows.append({"agent": "ppo", "status": "missing_model", "decision": "discard", "decision_reason": f"Missing model at {tuned_model}"})
             continue
-        if agent == "hf_llm" and not hf_available:
-            rows.append({"agent": "hf_llm", "status": "unavailable", "decision": "discard", "decision_reason": "HF model/token unavailable; skipped gracefully."})
+        if agent == "hf_llm_agent" and not hf_available:
+            rows.append({"agent": "hf_llm_agent", "status": "unavailable", "decision": "discard", "decision_reason": "HF adapter/model unavailable; skipped gracefully."})
             continue
 
         reward_vals: List[float] = []
@@ -516,7 +523,7 @@ def _build_agent_benchmark(
                             "scenario": scenario_cfg["scenario"],
                             "difficulty": scenario_cfg["difficulty"],
                             "attacker": scenario_cfg["attacker"],
-                            "action_source": "hf_llm_agent" if agent == "hf_llm" else "ppo_agent",
+                            "action_source": "hf_llm_agent" if agent == "hf_llm_agent" else "ppo_agent",
                             "intelligence_enabled": True,
                         },
                     )
@@ -696,7 +703,7 @@ def main() -> None:
     parser.add_argument("--episodes", type=int, default=50)
     parser.add_argument("--max-steps", type=int, default=150)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--agents", type=str, default="", help="Comma-separated agent list: ppo,hf_llm,random")
+    parser.add_argument("--agents", type=str, default="", help="Comma-separated agent list: ppo,hf_llm_agent,random")
     parser.add_argument("--seeds", type=int, default=20, help="Number of seed runs per agent/scenario in agent mode")
     parser.add_argument("--stress", type=str, default="default", choices=["default", "all-hard"], help="Stress preset suite")
     parser.add_argument("--run-dir", action="append", default=[], help="Run directory containing model.zip and config.json")

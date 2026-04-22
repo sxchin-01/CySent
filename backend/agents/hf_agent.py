@@ -3,6 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from contextlib import nullcontext
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -10,13 +15,45 @@ try:
 except ImportError:
     InferenceClient = None
 
+try:
+    import torch
+except ImportError:  # pragma: no cover - optional when using remote-only HF
+    torch = None
 
-VALID_ACTIONS = {
-    "rotate_credentials": 4,
-    "patch_auth_server": 3,
-    "segment_finance_database": 11,
-    "investigate_top_alert": 10,
+try:
+    from peft import PeftModel
+except ImportError:  # pragma: no cover - optional when using merged/local adapter paths
+    PeftModel = None
+
+try:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+except ImportError:  # pragma: no cover - optional when using remote-only HF
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
+
+from backend.env.security_env import ACTION_NAMES
+
+
+VALID_ACTIONS = {action_name: action_id for action_id, action_name in ACTION_NAMES.items()}
+ACTION_LIST = ", ".join(VALID_ACTIONS.keys())
+
+ALIASES = {
+    "isolate_host": "isolate_suspicious_host",
 }
+
+
+def _normalize_text(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.lower())
+    return re.sub(r"_+", "_", normalized).strip("_")
+
+
+def _is_merged_model_dir(path: str) -> bool:
+    candidate = Path(path)
+    return candidate.exists() and candidate.is_dir() and (candidate / "config.json").exists() and not (candidate / "adapter_config.json").exists()
+
+
+def _looks_like_local_path(value: str) -> bool:
+    return any(token in value for token in ("\\", "/", ":")) or value.startswith(".")
 
 
 class HFAgent:
@@ -25,12 +62,14 @@ class HFAgent:
     def __init__(
         self,
         model_id: Optional[str] = None,
+        adapter_path: Optional[str] = None,
         endpoint_url: Optional[str] = None,
         token: Optional[str] = None,
         timeout: Optional[float] = None,
         max_retries: int = 3,
     ) -> None:
-        self.model_id = model_id or os.getenv("HF_MODEL_ID", "microsoft/DialoGPT-medium")
+        self.model_id = model_id or os.getenv("HF_MODEL_ID", "Qwen/Qwen2.5-3B-Instruct")
+        self.adapter_path = adapter_path or os.getenv("HF_ADAPTER_PATH", "").strip()
         self.endpoint_url = endpoint_url or os.getenv("HF_ENDPOINT_URL")
         self.token = token or os.getenv("HF_TOKEN")
         if timeout is None:
@@ -38,10 +77,21 @@ class HFAgent:
         self.timeout = float(timeout)
         self.max_retries = max_retries
         self.client: Optional[InferenceClient] = None
+        self.model = None
+        self.tokenizer = None
+        self._using_local_model = False
         self._initialize_client()
 
     def _initialize_client(self) -> None:
         """Initialize the HuggingFace client."""
+        if AutoModelForCausalLM is not None and AutoTokenizer is not None:
+            try:
+                self._initialize_local_model()
+                return
+            except Exception:
+                if not self.endpoint_url:
+                    raise
+
         if InferenceClient is None:
             raise ImportError("huggingface_hub not installed. Cannot use HF agent.")
 
@@ -51,6 +101,44 @@ class HFAgent:
         else:
             # Use standard HF Inference API
             self.client = InferenceClient(model=self.model_id, token=self.token)
+
+    def _model_kwargs(self) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "token": self.token,
+            "trust_remote_code": True,
+            "device_map": "auto",
+        }
+        if torch is not None:
+            kwargs["torch_dtype"] = torch.float16 if torch.cuda.is_available() else torch.float32
+        return kwargs
+
+    def _initialize_local_model(self) -> None:
+        model_kwargs = self._model_kwargs()
+
+        if self.adapter_path:
+            if _looks_like_local_path(self.adapter_path) and not Path(self.adapter_path).exists():
+                raise FileNotFoundError(f"HF_ADAPTER_PATH does not exist: {self.adapter_path}")
+            if _is_merged_model_dir(self.adapter_path):
+                self.model = AutoModelForCausalLM.from_pretrained(self.adapter_path, **model_kwargs)
+                self.tokenizer = AutoTokenizer.from_pretrained(self.adapter_path, token=self.token, trust_remote_code=True)
+            else:
+                base_model = AutoModelForCausalLM.from_pretrained(self.model_id, **model_kwargs)
+                if PeftModel is None:
+                    raise ImportError("peft is required to load LoRA adapters.")
+                try:
+                    self.model = PeftModel.from_pretrained(base_model, self.adapter_path, token=self.token)
+                except TypeError:
+                    self.model = PeftModel.from_pretrained(base_model, self.adapter_path)
+                tokenizer_source = self.adapter_path if Path(self.adapter_path).exists() else self.model_id
+                self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, token=self.token, trust_remote_code=True)
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(self.model_id, **model_kwargs)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, token=self.token, trust_remote_code=True)
+
+        if getattr(self.tokenizer, "pad_token", None) is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.model.eval()
+        self._using_local_model = True
 
     def _build_prompt(self, state: Dict[str, Any]) -> str:
         """Build a compact prompt for the LLM."""
@@ -74,7 +162,7 @@ class HFAgent:
         recent_events = events[-3:] if events else []  # Last 3 events
         event_summaries = [e.get("summary", str(e)) for e in recent_events]
 
-        prompt = f"""You are an expert cybersecurity defender. Choose the best action to protect this {scenario} network from a {attacker} attacker.
+        prompt = f"""You are an expert cybersecurity defender. Choose exactly one CySent action to protect this {scenario} network from a {attacker} attacker.
 
 Current State:
 - Network Risk: {risk:.2f}
@@ -89,88 +177,105 @@ Available Actions:
 - patch_auth_server: Apply security patches to authentication server
 - segment_finance_database: Isolate finance database from network threats
 - investigate_top_alert: Examine the highest priority security alert
+- isolate_suspicious_host: Quarantine the most suspicious host immediately
+- patch_hr_systems: Apply security patches to HR systems
+- patch_web_server: Apply security patches to web servers
+- increase_monitoring: Increase monitoring and alerting intensity
+- restore_backup: Restore from backup after destructive compromise
+- deploy_honeypot: Deploy a decoy honeypot to absorb attacker attention
+- phishing_training: Run phishing awareness training
 
-Respond with ONLY the action name (one of: rotate_credentials, patch_auth_server, segment_finance_database, investigate_top_alert)."""
+Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
 
         return prompt
 
-    async def _call_hf_api(self, prompt: str) -> str:
+    def _call_hf_api(self, prompt: str) -> str:
         """Call HuggingFace API with retry logic."""
         if self.client is None:
             raise RuntimeError("HF client not initialized")
 
         for attempt in range(self.max_retries):
             try:
-                if self.endpoint_url:
-                    # TGI/Serverless endpoint
-                    response = self.client.text_generation(
-                        prompt,
-                        max_new_tokens=50,
-                        temperature=0.1,
-                        do_sample=True,
-                    )
-                else:
-                    # Standard HF serverless API path.
-                    try:
-                        response = self.client.text_generation(
-                            prompt,
-                            max_new_tokens=50,
-                            temperature=0.1,
-                            do_sample=True,
-                        )
-                    except Exception:
-                        # Compatibility fallback for conversational-style providers.
-                        response = self.client.conversational(
-                            {"inputs": {"past_user_inputs": [], "generated_responses": [], "text": prompt}},
-                            parameters={"max_length": 100, "temperature": 0.1},
-                        )
-                        response = response["generated_text"]
+                response = self.client.text_generation(
+                    prompt,
+                    max_new_tokens=16,
+                    temperature=0.0,
+                    do_sample=False,
+                )
 
                 return str(response).strip()
             except Exception as e:
                 if attempt == self.max_retries - 1:
                     raise RuntimeError(f"HF API call failed after {self.max_retries} attempts: {e}")
-                await asyncio.sleep(1)  # Brief backoff
+                time.sleep(1)
 
         return ""
 
+    def _call_local_model(self, prompt: str) -> str:
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError("Local HF model not initialized")
+
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+        model_device = getattr(self.model, "device", None)
+        if model_device is None:
+            model_device = next(self.model.parameters()).device
+        inputs = {k: v.to(model_device) for k, v in inputs.items()}
+        with torch.no_grad() if torch is not None else nullcontext():
+            output = self.model.generate(
+                **inputs,
+                max_new_tokens=16,
+                do_sample=False,
+                temperature=0.0,
+                pad_token_id=self.tokenizer.eos_token_id,
+            )
+        return str(self.tokenizer.decode(output[0], skip_special_tokens=True)).strip()
+
     def _parse_action(self, response: str) -> Optional[int]:
         """Parse the LLM response to extract a valid action."""
-        response_lower = response.lower().strip()
+        normalized_response = _normalize_text(response)
 
         for action_name, action_id in VALID_ACTIONS.items():
-            if action_name.lower() in response_lower:
+            if _normalize_text(action_name) in normalized_response:
                 return action_id
+
+        for alias, mapped in ALIASES.items():
+            if _normalize_text(alias) in normalized_response:
+                return VALID_ACTIONS.get(mapped)
 
         return None
 
-    async def predict_action_async(self, state: Dict[str, Any]) -> int:
-        """Predict action using HF LLM asynchronously."""
+    def _predict_action_impl(self, state: Dict[str, Any]) -> int:
         prompt = self._build_prompt(state)
-        response = await asyncio.wait_for(self._call_hf_api(prompt), timeout=self.timeout)
+        response = self._call_local_model(prompt) if self._using_local_model else self._call_hf_api(prompt)
         action_id = self._parse_action(response)
 
         if action_id is None:
-            # Fallback to default action if parsing fails
-            return 0  # do_nothing
+            raise ValueError(f"HF adapter returned an invalid CySent action: {response!r}")
 
         return action_id
+
+    async def predict_action_async(self, state: Dict[str, Any]) -> int:
+        """Predict action using HF LLM asynchronously."""
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(self._predict_action_impl, state), timeout=self.timeout)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(f"HF adapter timed out after {self.timeout:.1f}s") from exc
 
     def predict_action(self, state: Dict[str, Any]) -> int:
         """Predict action using HF LLM (synchronous wrapper)."""
         try:
-            # Try to run async in current event loop
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If loop is already running, we need to handle differently
-                # For now, return fallback
-                return 0
-            else:
-                return loop.run_until_complete(self.predict_action_async(state))
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(self._predict_action_impl, state)
+            try:
+                return future.result(timeout=self.timeout)
+            except FuturesTimeoutError as exc:
+                future.cancel()
+                raise TimeoutError(f"HF adapter timed out after {self.timeout:.1f}s") from exc
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
-            # Fallback on any error
-            return 0
+            raise
 
     def is_available(self) -> bool:
         """Check if HF agent is available for use."""
-        return self.client is not None and bool(self.token)
+        return bool(self._using_local_model or self.client is not None)
