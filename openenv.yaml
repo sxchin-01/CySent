@@ -1,0 +1,17 @@
+metadata:
+  name: CySent
+  id: CySentOpenEnv-v0
+  version: 1.0.0
+  description: CySent cybersecurity simulation environment exposed through an OpenEnv-compatible adapter.
+  maintainer: CySent
+environment:
+  module: backend.env.security_env
+  class: CySentOpenEnvAdapter
+  api:
+    reset: true
+    step: true
+    state: true
+    close: true
+runtime:
+  python: ">=3.10"
+  dependencies_file: backend/requirements.txt

@@ -1041,3 +1041,53 @@ def maybe_register_openenv_env() -> None:
             id="CySentSecurity-v0",
             entry_point="backend.env.security_env:CySentSecurityEnv",
         )
+
+
+class CySentOpenEnvAdapter(CySentSecurityEnv):
+    """Thin OpenEnv-compatible wrapper over the existing Gymnasium environment."""
+
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        return super().reset(seed=seed, options=options)
+
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
+        return super().step(action)
+
+    def state(self) -> Dict[str, Any]:
+        latest_red_log = self.recent_red_logs[-1] if self.recent_red_logs else {}
+        return self._build_info(
+            last_action=str(self.previous_action_name),
+            red_log=latest_red_log,
+            events=[],
+            narrative=str(self.last_narrative),
+            intelligence={
+                "enabled": bool(self.runtime_controls.get("intelligence_enabled", True)),
+                "strategy_mode": self.runtime_controls.get("strategy_mode", "balanced"),
+                "action_source": self.runtime_controls.get("action_source", "ppo_agent"),
+            },
+        )
+
+    def close(self) -> None:
+        self.pending_effects = []
+        self.current_alerts = []
+        self.replay = []
+        self.events = []
+        self.recent_red_logs = []
+        self.intelligence_replay = []
+
+
+def maybe_register_openenv_adapter() -> None:
+    """Optional OpenEnv registration for the adapter if library is installed."""
+    if openenv is None:
+        return
+
+    register = getattr(openenv, "register", None)
+    if callable(register):
+        register(
+            id="CySentOpenEnv-v0",
+            entry_point="backend.env.security_env:CySentOpenEnvAdapter",
+        )

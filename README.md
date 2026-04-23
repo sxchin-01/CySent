@@ -14,6 +14,7 @@ CySent is a cybersecurity simulation and decision platform where:
 3. Optional HF-assisted defense path with hybrid credit-saving mode.
 4. Benchmark and evaluation pipeline with JSON and CSV artifacts.
 5. Replay and benchmark export endpoints for submission evidence.
+6. OpenEnv-compliant adapter with reset, step, state, and close methods.
 
 ## Architecture
 
@@ -84,6 +85,16 @@ npm --prefix frontend run dev -- --hostname 127.0.0.1 --port 3000
 Open:
 1. Frontend: `http://127.0.0.1:3000`
 2. API docs: `http://127.0.0.1:8000/docs`
+
+## OpenEnv Compliance
+
+CySent is OpenEnv compliant through `CySentOpenEnvAdapter` and `openenv.yaml`.
+
+Run a quick local check:
+
+```bash
+python -c "from backend.env.security_env import CySentOpenEnvAdapter; env=CySentOpenEnvAdapter(); obs,info=env.reset(); out=env.step(0); st=env.state(); env.close(); print(type(obs).__name__, type(info).__name__, len(out), type(st).__name__)"
+```
 
 ## PPO vs HF Modes
 
