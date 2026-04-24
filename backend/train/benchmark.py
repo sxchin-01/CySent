@@ -721,7 +721,8 @@ def main() -> None:
     parser.add_argument("--output", type=str, default="backend/train/artifacts/benchmark/benchmark_summary.json")
     args = parser.parse_args()
 
-    agents = [a.strip() for a in args.agents.split(",") if a.strip()]
+    raw_agents = args.agents.replace(",", " ")
+    agents = [a.strip() for a in raw_agents.split() if a.strip()]
 
     summary = build_benchmark(
         episodes=args.episodes,

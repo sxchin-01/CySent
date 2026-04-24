@@ -7,6 +7,9 @@ venv/
 
 # Training artifacts
 backend/train/artifacts/
+outputs/
+cysent_action_dataset.jsonl
+notebooks/cysent_action_dataset.jsonl
 
 # Node
 frontend/node_modules/

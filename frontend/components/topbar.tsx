@@ -11,6 +11,7 @@ type TopbarProps = {
   attacker: string;
   strategyMode: StrategyMode;
   actionSource: ActionSource;
+  activeAgentLabel: string;
   running: boolean;
   onScenarioChange: (value: string) => void;
   onDifficultyChange: (value: string) => void;
@@ -79,7 +80,7 @@ export function Topbar(props: TopbarProps) {
           </button>
           <div className="col-span-2 flex items-center justify-center gap-1.5 rounded-lg border border-fuchsia-300/40 bg-fuchsia-300/10 px-2.5 py-1.5 text-xs text-fuchsia-100 sm:col-span-5 xl:col-span-1">
             {props.actionSource === "ppo_agent" ? <Cpu size={14} /> : <Brain size={14} />}
-            {props.actionSource === "ppo_agent" ? "PPO Defender" : "HF LLM Defender"}
+            {props.activeAgentLabel}
           </div>
         </div>
       </div>

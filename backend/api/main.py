@@ -5,6 +5,7 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import os
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +19,26 @@ from backend.train.evaluate import evaluate
 from backend.train.train_ppo import train
 
 app = FastAPI(title="CySent API", version="1.0.0")
+
+
+def _load_local_env_file(path: str = ".env") -> None:
+    """Load simple KEY=VALUE entries from .env into process env when missing."""
+    env_path = Path(path)
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and os.getenv(key) is None:
+            os.environ[key] = value
+
+
+_load_local_env_file()
 
 app.add_middleware(
     CORSMiddleware,

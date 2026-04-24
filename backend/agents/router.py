@@ -45,11 +45,14 @@ class AgentRouter:
             self.ppo_agent = PPOAgent()
         except Exception:
             self.ppo_agent = None
+            print("[AgentRouter] PPO unavailable at startup.")
 
         try:
             self.hf_agent = HFAgent(timeout=float(self.config.get("hf_timeout", os.getenv("HF_TIMEOUT", 10.0))))
-        except Exception:
+        except Exception as exc:
             self.hf_agent = None
+            print(f"[AgentRouter] HF unavailable at startup: {type(exc).__name__}: {exc}")
+            print("[AgentRouter] PPO remains default fallback.")
 
     def _should_use_hf(self, network_risk: float) -> bool:
         """Determine if HF should be used based on mode and risk."""
@@ -156,6 +159,8 @@ class AgentRouter:
     def get_active_agent_name(self) -> str:
         """Get the name of the currently active agent for UI display."""
         if self.last_used_agent == "hf_llm_agent":
+            if self.hf_agent is not None:
+                return self.hf_agent.deployment_label()
             return "HF LLM Defender"
         else:
             return "PPO Defender"

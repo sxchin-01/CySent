@@ -70,8 +70,8 @@ class HFAgent:
     ) -> None:
         self.model_id = model_id or os.getenv("HF_MODEL_ID", "Qwen/Qwen2.5-3B-Instruct")
         self.adapter_path = adapter_path or os.getenv("HF_ADAPTER_PATH", "").strip()
-        self.endpoint_url = endpoint_url or os.getenv("HF_ENDPOINT_URL")
-        self.token = token or os.getenv("HF_TOKEN")
+        self.endpoint_url = (endpoint_url or os.getenv("HF_ENDPOINT_URL") or "").strip() or None
+        self.token = (token or os.getenv("HF_TOKEN") or "").strip() or None
         if timeout is None:
             timeout = float(os.getenv("HF_TIMEOUT", "10.0"))
         self.timeout = float(timeout)
@@ -80,27 +80,33 @@ class HFAgent:
         self.model = None
         self.tokenizer = None
         self._using_local_model = False
+        self._active_backend = "none"
         self._initialize_client()
 
     def _initialize_client(self) -> None:
-        """Initialize the HuggingFace client."""
-        if AutoModelForCausalLM is not None and AutoTokenizer is not None:
-            try:
-                self._initialize_local_model()
-                return
-            except Exception:
-                if not self.endpoint_url:
-                    raise
+        """Initialize with precedence: hosted (if configured) -> local adapter -> unavailable."""
+        hosted_configured = bool(str(self.endpoint_url or "").strip())
+        hosted_model_configured = bool(str(self.token or "").strip()) and not bool(self.adapter_path)
 
-        if InferenceClient is None:
-            raise ImportError("huggingface_hub not installed. Cannot use HF agent.")
+        if hosted_configured or hosted_model_configured:
+            if InferenceClient is None:
+                raise ImportError("huggingface_hub not installed. Cannot use hosted HF agent.")
+            target = self.endpoint_url if hosted_configured else self.model_id
+            self.client = InferenceClient(model=target, token=self.token)
+            self._using_local_model = False
+            self._active_backend = "cloud"
+            print(f"[HFAgent] Ready (cloud). target={target}")
+            return
 
-        if self.endpoint_url:
-            # Use custom endpoint (TGI, Serverless, etc.)
-            self.client = InferenceClient(model=self.endpoint_url, token=self.token)
-        else:
-            # Use standard HF Inference API
-            self.client = InferenceClient(model=self.model_id, token=self.token)
+        if self.adapter_path:
+            if AutoModelForCausalLM is None or AutoTokenizer is None:
+                raise ImportError("transformers is required for local HF adapter usage.")
+            self._initialize_local_model()
+            self._active_backend = "local"
+            print(f"[HFAgent] Ready (local adapter). adapter={self.adapter_path}")
+            return
+
+        raise RuntimeError("HF is not configured: set HF_ENDPOINT_URL or HF_ADAPTER_PATH.")
 
     def _model_kwargs(self) -> Dict[str, Any]:
         kwargs: Dict[str, Any] = {
@@ -131,10 +137,6 @@ class HFAgent:
                     self.model = PeftModel.from_pretrained(base_model, self.adapter_path)
                 tokenizer_source = self.adapter_path if Path(self.adapter_path).exists() else self.model_id
                 self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, token=self.token, trust_remote_code=True)
-        else:
-            self.model = AutoModelForCausalLM.from_pretrained(self.model_id, **model_kwargs)
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, token=self.token, trust_remote_code=True)
-
         if getattr(self.tokenizer, "pad_token", None) is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model.eval()
@@ -279,3 +281,10 @@ Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
     def is_available(self) -> bool:
         """Check if HF agent is available for use."""
         return bool(self._using_local_model or self.client is not None)
+
+    def deployment_label(self) -> str:
+        if self._using_local_model:
+            return "Colab LLM Defender"
+        if self.client is not None:
+            return "HF Cloud Defender"
+        return "HF LLM Defender"

@@ -43,6 +43,7 @@ export default function HomePage() {
   const [attacker, setAttacker] = useState("ransomware_gang");
   const [strategyMode, setStrategyMode] = useState<StrategyMode>("balanced");
   const [actionSource, setActionSource] = useState<ActionSource>("ppo_agent");
+  const [activeAgentLabel, setActiveAgentLabel] = useState("PPO Defender");
 
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -158,6 +159,7 @@ export default function HomePage() {
 
       stateRef.current = resolvedState;
       setState(resolvedState);
+      setActiveAgentLabel(result.active_agent ?? (actionSource === "ppo_agent" ? "PPO Defender" : "Colab LLM Defender"));
 
       setIncidents((prevLines) => [incidentLine(resolvedState, result), ...prevLines].slice(0, 50));
       setTimeline((prevPoints) => [
@@ -222,6 +224,7 @@ export default function HomePage() {
       ]);
       setFrames([]);
       setReplayIndex(0);
+      setActiveAgentLabel(actionSource === "ppo_agent" ? "PPO Defender" : "Colab LLM Defender");
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Reset request failed.");
     }
@@ -259,6 +262,7 @@ export default function HomePage() {
       ]);
       setFrames([]);
       setReplayIndex(0);
+      setActiveAgentLabel(actionSource === "ppo_agent" ? "PPO Defender" : "Colab LLM Defender");
       setRunning(true);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Unable to start simulation.");
@@ -285,6 +289,7 @@ export default function HomePage() {
           attacker={attacker}
           strategyMode={strategyMode}
           actionSource={actionSource}
+          activeAgentLabel={activeAgentLabel}
           running={running}
           onScenarioChange={setScenario}
           onDifficultyChange={setDifficulty}

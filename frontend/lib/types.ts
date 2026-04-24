@@ -92,6 +92,7 @@ export type StepResult = {
   terminated: boolean;
   truncated: boolean;
   action_name: string;
+  active_agent?: string;
   network_risk: number;
   risk_breakdown: Partial<RiskBreakdown>;
   assets: AssetState[];

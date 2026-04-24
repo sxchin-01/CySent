@@ -156,10 +156,46 @@ Use a trained adapter at runtime:
 2. Set `HF_ADAPTER_PATH` to a local LoRA folder, a merged local model folder, or a HF Hub adapter repo id.
 3. Keep `AGENT_MODE=hybrid` and select `hf_llm_agent`; PPO remains the fallback if the adapter fails or times out.
 
+Today (Colab adapter local):
+1. `HF_MODEL_ID=Qwen/Qwen2.5-3B-Instruct`
+2. `HF_ADAPTER_PATH=outputs/cysent_unsloth_adapter`
+3. `HF_ENDPOINT_URL=` (leave empty)
+4. `HF_TIMEOUT=10.0`
+
+Tomorrow (HF credits cloud):
+1. `HF_TOKEN=<your_hf_token>`
+2. `HF_MODEL_ID=<hf_model_repo_or_inference_target>`
+3. Optional `HF_ENDPOINT_URL=<dedicated_endpoint_url>`
+4. Clear `HF_ADAPTER_PATH=` to force hosted path
+
+Runtime precedence:
+1. Hosted HF is used when `HF_ENDPOINT_URL` is set, or when `HF_TOKEN` is set and `HF_ADAPTER_PATH` is empty.
+2. Local adapter path is used when `HF_ADAPTER_PATH` is set and hosted config is not selected.
+3. PPO remains default and fallback if HF init or HF inference fails.
+
 Notes:
 1. Dataset rows are generated in CySent instruction format: `instruction`, `input`, `output`.
 2. Output action labels are constrained to current CySent valid action names.
 3. PPO and backend runtime paths remain unchanged.
+
+## Colab Training Completed
+
+If the Colab notebook finishes, the adapter is saved at `outputs/cysent_unsloth_adapter`.
+
+Use it at runtime by setting:
+1. `HF_MODEL_ID` to the base model you trained against.
+2. `HF_ADAPTER_PATH=outputs/cysent_unsloth_adapter` for a local adapter, or a merged local folder / HF repo id.
+3. `AGENT_MODE=hybrid` to keep PPO as the fallback.
+
+Benchmark the three comparison modes:
+
+```bash
+python -m backend.train.benchmark --episodes 50 --seeds 20 --stress default --agents ppo,hf_llm_agent,random
+```
+
+Artifacts land under `backend/train/artifacts/benchmark/`.
+
+Screenshot placeholder path: `assets/screenshots/`
 
 ## Export Endpoints
 
