@@ -4,10 +4,9 @@ Simple interface for cyber defense decision-making.
 """
 
 import os
-import json
 import gradio as gr
 import torch
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 # Try to load HF model/adapter
 try:
@@ -27,14 +26,17 @@ tokenizer = None
 
 
 def load_hf_model() -> bool:
-    """Attempt to load HF base + adapter."""
+    """Attempt to load HF base model, then optional adapter."""
     global model, tokenizer
-    if not HF_AVAILABLE or not ADAPTER_PATH:
+    if not HF_AVAILABLE:
         return False
     try:
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, token=HF_TOKEN or None)
         base_model = AutoModelForCausalLM.from_pretrained(MODEL_ID, device_map="auto")
-        model = PeftModel.from_pretrained(base_model, ADAPTER_PATH, token=HF_TOKEN or None)
+        if ADAPTER_PATH:
+            model = PeftModel.from_pretrained(base_model, ADAPTER_PATH, token=HF_TOKEN or None)
+        else:
+            model = base_model
         model.eval()
         return True
     except Exception as e:
@@ -85,7 +87,8 @@ def get_action(state_text: str) -> Dict[str, Any]:
                 action = valid_action
                 break
         
-        return {"action": action, "confidence": 0.85, "method": "hf_adapter"}
+        method = "hf_adapter" if ADAPTER_PATH else "hf_base"
+        return {"action": action, "confidence": 0.85, "method": method}
     except Exception as e:
         print(f"[CySent] HF inference failed: {e}")
         return {"action": "monitor_logs", "confidence": 0.4, "method": "error_fallback"}
@@ -112,7 +115,10 @@ def predict_action(state_description: str) -> str:
 
 # Initialize model on startup
 if load_hf_model():
-    model_status = f"✓ HF Model loaded: {MODEL_ID} + {ADAPTER_PATH.split('/')[-1]}"
+    if ADAPTER_PATH:
+        model_status = f"✓ HF Model loaded: {MODEL_ID} + {ADAPTER_PATH.split('/')[-1]}"
+    else:
+        model_status = f"✓ HF Base model loaded: {MODEL_ID}"
 else:
     model_status = "⚠ HF Model unavailable. Using heuristic fallback."
 
