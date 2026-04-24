@@ -17,6 +17,24 @@ CySent is a cybersecurity simulation and decision platform where:
 3. Frontend Cytoscape graph rendering is guarded against invalid edges by only drawing edges whose source and target nodes exist in the current asset set.
 4. Frontend API client now returns actionable connectivity and timeout errors (instead of generic "failed to fetch") when backend is down.
 
+## Problem Statement
+
+SOC teams face alert overload and inconsistent response quality while attack paths evolve faster than manual triage.
+CySent provides a measurable cyber defense simulation where autonomous BLUE actions are benchmarked against stable and naive baselines.
+
+## Why Cyber Defense Matters
+
+1. Multi-step attacks can escalate from foothold to breach in minutes.
+2. Defensive decisions must be reproducible, explainable, and stress-tested.
+3. Benchmark-backed autonomy reduces guesswork in high-pressure incident response.
+
+## Why CySent Is Novel / OpenEnv-Worthy
+
+1. PPO-first control path with optional HF reasoning and strict PPO fallback safety.
+2. End-to-end judge evidence pipeline: replay export, benchmark export, and artifacts.
+3. OpenEnv adapter contract with operational `reset`, `step`, `state`, `close` methods.
+4. Hybrid mode supports practical LLM usage under cost and latency constraints.
+
 ## Core Features
 
 1. Real-time defense simulation with incident timeline and risk telemetry.
@@ -35,6 +53,24 @@ CySent is a cybersecurity simulation and decision platform where:
 	- `ppo_agent` (default)
 	- `hf_llm_agent` (optional)
 5. Frontend: Next.js command dashboard and live visualization.
+
+```text
+   [Next.js Frontend]
+	   |
+	   v
+ [FastAPI Runtime: backend/api/main.py]
+	   |
+	   v
+       [AgentRouter] ----> [PPO Agent]
+	   |
+	   +-------------> [HF Agent (Base + LoRA)]
+	   |
+	   v
+   [CySentSecurityEnv + Threat Engine]
+	   |
+	   v
+ [Replay + Benchmark + Training Artifacts]
+```
 
 Primary paths:
 1. Environment and threat logic: `backend/env/`
@@ -79,6 +115,11 @@ Important variables:
 5. `AGENT_MODE` (`hybrid`, `full_llm`, `ppo_only`)
 6. `HYBRID_THRESHOLD`
 
+Local adapter run setup:
+1. `HF_MODEL_ID=Qwen/Qwen2.5-3B-Instruct`
+2. `HF_ADAPTER_PATH=outputs/cysent_unsloth_adapter`
+3. `HF_ENDPOINT_URL=` (empty for local adapter mode)
+
 ### 3) Run backend + frontend
 
 One-command scripts:
@@ -99,6 +140,15 @@ Open:
 ## OpenEnv Compliance
 
 CySent is OpenEnv compliant through `CySentOpenEnvAdapter` and `openenv.yaml`.
+
+Required methods:
+1. `reset()`
+2. `step(action)`
+3. `state()`
+4. `close()`
+
+Spec path:
+1. `openenv.yaml`
 
 Run a quick local check:
 
@@ -141,6 +191,29 @@ Artifacts:
 1. `backend/train/artifacts/benchmark/benchmark_summary.json`
 2. `backend/train/artifacts/benchmark/benchmark_table.csv`
 3. `backend/train/artifacts/benchmark/benchmark_table.json`
+
+## Results Snapshot (Judge View)
+
+Use this table for final submission. Replace `TBD` with values from benchmark artifacts.
+
+| Agent | Mean Reward | Mean Risk | Breach Rate | Evidence |
+|---|---:|---:|---:|---|
+| PPO (`ppo`) | TBD | TBD | TBD | `benchmark_summary.json` |
+| HF (`hf_llm_agent`) | TBD | TBD | TBD | `benchmark_summary.json` |
+| Random (`random`) | TBD | TBD | TBD | `benchmark_summary.json` |
+
+If metrics are not finalized, include command + artifact timestamps as evidence placeholders.
+
+## Training Evidence
+
+PPO evidence placeholders:
+1. `assets/screenshots/ppo-reward-curve.png`
+2. `assets/screenshots/ppo-loss-curve.png`
+
+Colab Unsloth fine-tune summary:
+1. Notebook path: `notebooks/CySent_Unsloth_Train.ipynb`
+2. Base model, dataset rows, and adapter output path summary
+3. Local adapter smoke-test output (`scripts/test_hf_agent.py`)
 
 ## Train CySent Model in Colab with Unsloth
 
@@ -207,6 +280,15 @@ Artifacts land under `backend/train/artifacts/benchmark/`.
 
 Screenshot placeholder path: `assets/screenshots/`
 
+## Frontend Screenshots (Submission Placeholders)
+
+Recommended placeholders:
+1. `assets/screenshots/01-dashboard-overview.png`
+2. `assets/screenshots/02-live-incident-feed.png`
+3. `assets/screenshots/03-agent-selection-hf-vs-ppo.png`
+4. `assets/screenshots/04-network-graph-active-defense.png`
+5. `assets/screenshots/05-results-or-export-view.png`
+
 ## Export Endpoints
 
 1. Replay JSON download: `GET /replay/{episode_id}/export`
@@ -215,7 +297,12 @@ Screenshot placeholder path: `assets/screenshots/`
 
 ## Demo Flow
 
-Use these guides:
+Judge quick flow (3 steps):
+1. Start stack and open dashboard; pick scenario + attacker + agent mode.
+2. Click Start and observe live graph, incidents, and action rationale updates.
+3. Export replay/benchmark evidence and compare PPO vs HF vs Random.
+
+Detailed guides:
 1. `docs/demo-flow.md`
 2. `docs/pitch-2min.md`
 
@@ -247,3 +334,9 @@ Product name: CySent
 Tagline: Autonomous Cyber Defense Command Center
 
 Visual language: deep slate/cyan command interface with incident-first telemetry.
+
+## Future Work
+
+1. Add richer scenario packs and attacker behavior libraries.
+2. Improve adaptive hybrid routing for lower LLM cost and latency.
+3. Expand benchmark suite with robustness and cross-seed confidence reporting.
