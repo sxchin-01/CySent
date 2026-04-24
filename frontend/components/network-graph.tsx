@@ -58,14 +58,19 @@ export function NetworkGraph({ assets, redTarget, underAttack = false }: Props) 
   );
 
   const edgeElements = useMemo(
-    () =>
-      EDGE_MAP.map(([source, target], i) => {
-        const active = underAttack && redTarget && (source === redTarget || target === redTarget);
-        return {
-          data: { id: `e${i}`, source, target, active: active ? "yes" : "no" },
-        };
-      }),
-    [redTarget, underAttack],
+    () => {
+      const nodeIds = new Set(assets.map((asset) => asset.name));
+
+      return EDGE_MAP.filter(([source, target]) => nodeIds.has(source) && nodeIds.has(target)).map(
+        ([source, target], i) => {
+          const active = underAttack && redTarget && (source === redTarget || target === redTarget);
+          return {
+            data: { id: `e${i}`, source, target, active: active ? "yes" : "no" },
+          };
+        },
+      );
+    },
+    [assets, redTarget, underAttack],
   );
 
   return (

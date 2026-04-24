@@ -1,21 +1,49 @@
 import { EnvState, StepResult } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+const REQUEST_TIMEOUT_MS = 12_000;
+
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      cache: init?.cache ?? "no-store",
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      throw new Error(`API ${path} failed: ${res.status} ${res.statusText}`);
+    }
+
+    return (await res.json()) as T;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(`API timeout after ${REQUEST_TIMEOUT_MS / 1000}s at ${API_BASE}${path}.`);
+    }
+    if (err instanceof TypeError) {
+      throw new Error(
+        `Cannot reach backend at ${API_BASE}. Start the API server and retry. (${err.message})`,
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 export async function fetchState(): Promise<EnvState> {
-  const res = await fetch(`${API_BASE}/state`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`State request failed: ${res.status}`);
-  return res.json();
+  return requestJson<EnvState>("/state");
 }
 
 export async function step(): Promise<StepResult> {
-  const res = await fetch(`${API_BASE}/step`, {
+  return requestJson<StepResult>("/step", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
   });
-  if (!res.ok) throw new Error(`Step request failed: ${res.status}`);
-  return res.json();
 }
 
 export async function stepWithActionName(_actionName: string, _actionId: number): Promise<StepResult> {
@@ -31,27 +59,21 @@ export async function resetSimulation(payload: {
   action_source: string;
   intelligence_enabled: boolean;
 }): Promise<EnvState> {
-  const res = await fetch(`${API_BASE}/reset`, {
+  return requestJson<EnvState>("/reset", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) throw new Error(`Reset request failed: ${res.status}`);
-  return res.json();
 }
 
 export async function fetchTrainingStatus(): Promise<Record<string, unknown>> {
-  const res = await fetch(`${API_BASE}/training-status`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Training status request failed: ${res.status}`);
-  return res.json();
+  return requestJson<Record<string, unknown>>("/training-status");
 }
 
 export async function runBenchmark(): Promise<Record<string, unknown>> {
-  const res = await fetch(`${API_BASE}/benchmark`, {
+  return requestJson<Record<string, unknown>>("/benchmark", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
   });
-  if (!res.ok) throw new Error(`Benchmark request failed: ${res.status}`);
-  return res.json();
 }
