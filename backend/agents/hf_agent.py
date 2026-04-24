@@ -26,6 +26,11 @@ except ImportError:  # pragma: no cover - optional when using merged/local adapt
     PeftModel = None
 
 try:
+    from peft import AutoPeftModelForCausalLM
+except ImportError:  # pragma: no cover - optional in older PEFT versions
+    AutoPeftModelForCausalLM = None
+
+try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 except ImportError:  # pragma: no cover - optional when using remote-only HF
     AutoModelForCausalLM = None
@@ -54,6 +59,19 @@ def _is_merged_model_dir(path: str) -> bool:
 
 def _looks_like_local_path(value: str) -> bool:
     return any(token in value for token in ("\\", "/", ":")) or value.startswith(".")
+
+
+def _read_adapter_base_model_name(adapter_path: str) -> Optional[str]:
+    """Read adapter_config.json and return base_model_name_or_path when available."""
+    try:
+        cfg_path = Path(adapter_path) / "adapter_config.json"
+        if not cfg_path.exists():
+            return None
+        loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
+        base = str(loaded.get("base_model_name_or_path", "")).strip()
+        return base or None
+    except Exception:
+        return None
 
 
 class HFAgent:
@@ -120,23 +138,57 @@ class HFAgent:
 
     def _initialize_local_model(self) -> None:
         model_kwargs = self._model_kwargs()
+        try:
+            if self.adapter_path:
+                if _looks_like_local_path(self.adapter_path) and not Path(self.adapter_path).exists():
+                    raise FileNotFoundError(f"HF_ADAPTER_PATH does not exist: {self.adapter_path}")
+                if _is_merged_model_dir(self.adapter_path):
+                    self.model = AutoModelForCausalLM.from_pretrained(self.adapter_path, **model_kwargs)
+                    self.tokenizer = AutoTokenizer.from_pretrained(self.adapter_path, token=self.token, trust_remote_code=True)
+                else:
+                    # Preferred path for Qwen LoRA: explicit base model + PeftModel.
+                    standard_err: Optional[Exception] = None
+                    if PeftModel is not None:
+                        try:
+                            print(f"[HFAgent] Loading LoRA with configured base model: {self.model_id}")
+                            base_model = AutoModelForCausalLM.from_pretrained(self.model_id, **model_kwargs)
+                            try:
+                                self.model = PeftModel.from_pretrained(base_model, self.adapter_path, token=self.token)
+                            except TypeError:
+                                self.model = PeftModel.from_pretrained(base_model, self.adapter_path)
+                        except Exception as exc:
+                            standard_err = exc
 
-        if self.adapter_path:
-            if _looks_like_local_path(self.adapter_path) and not Path(self.adapter_path).exists():
-                raise FileNotFoundError(f"HF_ADAPTER_PATH does not exist: {self.adapter_path}")
-            if _is_merged_model_dir(self.adapter_path):
-                self.model = AutoModelForCausalLM.from_pretrained(self.adapter_path, **model_kwargs)
-                self.tokenizer = AutoTokenizer.from_pretrained(self.adapter_path, token=self.token, trust_remote_code=True)
-            else:
-                base_model = AutoModelForCausalLM.from_pretrained(self.model_id, **model_kwargs)
-                if PeftModel is None:
-                    raise ImportError("peft is required to load LoRA adapters.")
-                try:
-                    self.model = PeftModel.from_pretrained(base_model, self.adapter_path, token=self.token)
-                except TypeError:
-                    self.model = PeftModel.from_pretrained(base_model, self.adapter_path)
-                tokenizer_source = self.adapter_path if Path(self.adapter_path).exists() else self.model_id
-                self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, token=self.token, trust_remote_code=True)
+                    # Fallback path: auto PEFT resolution from adapter metadata.
+                    if self.model is None:
+                        if AutoPeftModelForCausalLM is not None:
+                            try:
+                                adapter_base = _read_adapter_base_model_name(self.adapter_path)
+                                if adapter_base:
+                                    print(f"[HFAgent] Falling back to adapter-declared base model: {adapter_base}")
+                                try:
+                                    self.model = AutoPeftModelForCausalLM.from_pretrained(self.adapter_path, **model_kwargs)
+                                except TypeError:
+                                    self.model = AutoPeftModelForCausalLM.from_pretrained(self.adapter_path)
+                            except Exception:
+                                if standard_err is not None:
+                                    raise standard_err
+                                raise
+                        elif standard_err is not None:
+                            raise standard_err
+                        else:
+                            raise ImportError("peft is required to load LoRA adapters.")
+
+                    tokenizer_source = self.adapter_path if Path(self.adapter_path).exists() else self.model_id
+                    self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_source, token=self.token, trust_remote_code=True)
+
+                    if self.model is None:
+                        raise RuntimeError("Failed to initialize adapter model.")
+        except KeyError as exc:
+            raise RuntimeError(
+                "Adapter/base model mismatch while loading LoRA keys. "
+                "Use the adapter's matching base model (from adapter_config.json) or a merged model export."
+            ) from exc
         if getattr(self.tokenizer, "pad_token", None) is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model.eval()

@@ -7,6 +7,16 @@ CySent is a cybersecurity simulation and decision platform where:
 2. BLUE defends with a stable PPO policy by default.
 3. BLUE can optionally use Hugging Face LLM decision support with PPO fallback.
 
+## Recent Updates (Apr 2026)
+
+1. HF local LoRA loading path hardened for Qwen adapters:
+	- Tries configured `HF_MODEL_ID` + `PeftModel` first.
+	- Falls back to adapter-declared auto-PEFT loading when needed.
+	- Emits clear adapter/base mismatch errors instead of silent failure.
+2. Backend startup now surfaces HF initialization failures in router logs while preserving PPO fallback behavior.
+3. Frontend Cytoscape graph rendering is guarded against invalid edges by only drawing edges whose source and target nodes exist in the current asset set.
+4. Frontend API client now returns actionable connectivity and timeout errors (instead of generic "failed to fetch") when backend is down.
+
 ## Core Features
 
 1. Real-time defense simulation with incident timeline and risk telemetry.
