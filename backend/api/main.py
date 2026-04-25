@@ -6,8 +6,9 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import os
+import time
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -122,7 +123,58 @@ class CySentRuntime:
             }
 
 
-runtime = CySentRuntime()
+class RuntimeManager:
+    """Manages per-session CySentRuntime instances with TTL-based eviction."""
+
+    def __init__(self, max_sessions: int = 64, ttl_seconds: float = 3600) -> None:
+        self._sessions: Dict[str, CySentRuntime] = {}
+        self._last_access: Dict[str, float] = {}
+        self._lock = threading.Lock()
+        self._max_sessions = max_sessions
+        self._ttl = ttl_seconds
+
+    def get(self, session_id: str = "default") -> CySentRuntime:
+        with self._lock:
+            now = time.monotonic()
+            self._evict_stale(now)
+            if session_id not in self._sessions:
+                if len(self._sessions) >= self._max_sessions:
+                    self._evict_oldest()
+                self._sessions[session_id] = CySentRuntime()
+            self._last_access[session_id] = now
+            return self._sessions[session_id]
+
+    def _evict_stale(self, now: float) -> None:
+        expired = [
+            k for k, t in self._last_access.items()
+            if now - t > self._ttl and k != "default"
+        ]
+        for k in expired:
+            self._sessions.pop(k, None)
+            self._last_access.pop(k, None)
+
+    def _evict_oldest(self) -> None:
+        candidates = {
+            k: t for k, t in self._last_access.items() if k != "default"
+        }
+        if not candidates:
+            return
+        oldest = min(candidates, key=candidates.get)
+        self._sessions.pop(oldest, None)
+        self._last_access.pop(oldest, None)
+
+
+_manager = RuntimeManager()
+_manager.get()
+
+
+def _get_runtime(request: Request) -> CySentRuntime:
+    session_id = request.headers.get("x-session-id", "default")
+    return _manager.get(session_id)
+
+
+def _default_runtime() -> CySentRuntime:
+    return _manager.get()
 
 
 @app.get("/health")
@@ -131,18 +183,18 @@ def health() -> Dict[str, str]:
 
 
 @app.get("/state")
-def get_state() -> Dict[str, Any]:
-    return runtime.snapshot_state()
+def get_state(request: Request) -> Dict[str, Any]:
+    return _get_runtime(request).snapshot_state()
 
 
 @app.post("/reset")
-def reset(req: ResetRequest) -> Dict[str, Any]:
-    with runtime.state_lock:
-        # Switch agent based on action_source
+def reset(req: ResetRequest, request: Request) -> Dict[str, Any]:
+    rt = _get_runtime(request)
+    with rt.state_lock:
         if req.action_source in ["ppo_agent", "hf_llm_agent"]:
-            runtime.agent_router.switch_agent(req.action_source)
+            rt.agent_router.switch_agent(req.action_source)
 
-        _, info = runtime.env.reset(
+        _, info = rt.env.reset(
             seed=req.seed,
             options={
                 "scenario": req.scenario,
@@ -153,11 +205,11 @@ def reset(req: ResetRequest) -> Dict[str, Any]:
                 "intelligence_enabled": req.intelligence_enabled,
             },
         )
-        runtime.current_episode_id = str(uuid.uuid4())
-        runtime.last_info = info
+        rt.current_episode_id = str(uuid.uuid4())
+        rt.last_info = info
 
         return {
-            "episode_id": runtime.current_episode_id,
+            "episode_id": rt.current_episode_id,
             "step": info.get("step", 0),
             "network_risk": info.get("network_risk", 0.0),
             "risk_breakdown": info.get("risk_breakdown", {}),
@@ -173,29 +225,28 @@ def reset(req: ResetRequest) -> Dict[str, Any]:
 
 
 @app.post("/step")
-def step() -> Dict[str, Any]:
-    with runtime.state_lock:
-        # Get current observation and state for agent decision
-        obs = runtime.env._get_observation()
-        state = runtime.snapshot_state()
+def step(request: Request) -> Dict[str, Any]:
+    rt = _get_runtime(request)
+    with rt.state_lock:
+        obs = rt.env._get_observation()
+        state = rt.snapshot_state()
 
-        # Use agent router to select action
-        action = runtime.agent_router.predict_action(obs, state)
+        action = rt.agent_router.predict_action(obs, state)
 
-        _, reward, terminated, truncated, info = runtime.env.step(action)
+        _, reward, terminated, truncated, info = rt.env.step(action)
         info["action_name"] = ACTION_NAMES[action]
         info["reward"] = float(reward)
         info["selected_action"] = action
-        info["active_agent"] = runtime.agent_router.get_active_agent_name()
+        info["active_agent"] = rt.agent_router.get_active_agent_name()
 
         if terminated or truncated:
-            runtime.replays[runtime.current_episode_id] = list(runtime.env.replay)
-            runtime.current_episode_id = str(uuid.uuid4())
-            runtime.env.reset()
+            rt.replays[rt.current_episode_id] = list(rt.env.replay)
+            rt.current_episode_id = str(uuid.uuid4())
+            rt.env.reset()
 
-        runtime.last_info = info
+        rt.last_info = info
         return {
-            "episode_id": runtime.current_episode_id,
+            "episode_id": rt.current_episode_id,
             "reward": float(reward),
             "terminated": terminated,
             "truncated": truncated,
@@ -216,39 +267,43 @@ def step() -> Dict[str, Any]:
 
 
 @app.get("/metrics")
-def get_metrics() -> Dict[str, Any]:
-    with runtime.state_lock:
-        return runtime.last_info.get("metrics", {})
+def get_metrics(request: Request) -> Dict[str, Any]:
+    rt = _get_runtime(request)
+    with rt.state_lock:
+        return rt.last_info.get("metrics", {})
 
 
 @app.get("/training-status")
 def training_status() -> Dict[str, Any]:
-    return runtime.training
+    return _default_runtime().training
 
 
 @app.get("/replay/{episode_id}", response_model=ReplayResponse)
-def get_replay(episode_id: str) -> ReplayResponse:
-    if episode_id not in runtime.replays:
+def get_replay(episode_id: str, request: Request) -> ReplayResponse:
+    rt = _get_runtime(request)
+    if episode_id not in rt.replays:
         raise HTTPException(status_code=404, detail="episode replay not found")
-    return ReplayResponse(episode_id=episode_id, events=runtime.replays[episode_id])
+    return ReplayResponse(episode_id=episode_id, events=rt.replays[episode_id])
 
 
 @app.get("/replay/{episode_id}/export")
-def export_replay(episode_id: str) -> JSONResponse:
-    if episode_id not in runtime.replays:
+def export_replay(episode_id: str, request: Request) -> JSONResponse:
+    rt = _get_runtime(request)
+    if episode_id not in rt.replays:
         raise HTTPException(status_code=404, detail="episode replay not found")
-    payload = {"episode_id": episode_id, "events": runtime.replays[episode_id]}
+    payload = {"episode_id": episode_id, "events": rt.replays[episode_id]}
     headers = {"Content-Disposition": f'attachment; filename="replay_{episode_id}.json"'}
     return JSONResponse(content=payload, headers=headers)
 
 
 @app.post("/train")
 def start_training(req: TrainRequest) -> Dict[str, Any]:
-    if runtime.training["running"]:
+    rt = _default_runtime()
+    if rt.training["running"]:
         raise HTTPException(status_code=409, detail="training already in progress")
 
-    runtime.training["running"] = True
-    runtime.training["last_error"] = None
+    rt.training["running"] = True
+    rt.training["last_error"] = None
 
     def _job() -> None:
         try:
@@ -270,12 +325,12 @@ def start_training(req: TrainRequest) -> Dict[str, Any]:
             artifact.mkdir(parents=True, exist_ok=True)
             (artifact / "api_latest_eval.json").write_text(json.dumps(eval_summary, indent=2), encoding="utf-8")
 
-            runtime.training["last_run"] = result
-            runtime.training["evaluation"] = eval_summary
+            rt.training["last_run"] = result
+            rt.training["evaluation"] = eval_summary
         except Exception as exc:  # pragma: no cover
-            runtime.training["last_error"] = str(exc)
+            rt.training["last_error"] = str(exc)
         finally:
-            runtime.training["running"] = False
+            rt.training["running"] = False
 
     thread = threading.Thread(target=_job, daemon=True)
     thread.start()
@@ -297,7 +352,7 @@ def run_benchmark(req: BenchmarkRequest) -> Dict[str, Any]:
         cloud_model=req.cloud_model,
         output=req.output,
     )
-    runtime.training["benchmark"] = result
+    _default_runtime().training["benchmark"] = result
     return result
 
 

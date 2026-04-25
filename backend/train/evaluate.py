@@ -115,20 +115,34 @@ def _load_run_config(run_dir: Path) -> Dict[str, Any]:
     return {}
 
 
+class _SafeUnpickler(pickle.Unpickler):
+    """Unpickler that rejects arbitrary class instantiation."""
+
+    def find_class(self, module: str, name: str) -> type:
+        raise pickle.UnpicklingError(f"Blocked unpickle of {module}.{name}")
+
+
 def _load_vecnormalize_metadata(run_dir: Path) -> Dict[str, Any]:
-    vec_path = run_dir / "vecnormalize.pkl"
-    if not vec_path.exists():
-        return {"exists": False, "enabled": False}
+    json_path = run_dir / "vecnormalize.json"
+    if json_path.exists():
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                return {"exists": True, **payload}
+        except (json.JSONDecodeError, OSError):
+            pass
 
-    try:
-        with vec_path.open("rb") as f:
-            payload = pickle.load(f)
-        if isinstance(payload, dict):
-            return {"exists": True, **payload}
-    except Exception:
-        pass
+    pkl_path = run_dir / "vecnormalize.pkl"
+    if pkl_path.exists():
+        try:
+            with pkl_path.open("rb") as f:
+                payload = _SafeUnpickler(f).load()
+            if isinstance(payload, dict):
+                return {"exists": True, **payload}
+        except Exception:
+            pass
 
-    return {"exists": True, "enabled": None, "reason": "unknown_format"}
+    return {"exists": False, "enabled": False}
 
 
 def evaluate(

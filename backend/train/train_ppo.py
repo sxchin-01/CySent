@@ -4,7 +4,6 @@ import argparse
 import copy
 import hashlib
 import json
-import pickle
 import random
 import shutil
 from datetime import datetime, timezone
@@ -421,8 +420,9 @@ def train(
         "enabled": False,
         "reason": "VecNormalize disabled in CySent_v1_locked to keep PPO pipeline unchanged.",
     }
-    with (run_dir / "vecnormalize.pkl").open("wb") as f:
-        pickle.dump(vecnorm_payload, f)
+    (run_dir / "vecnormalize.json").write_text(
+        json.dumps(vecnorm_payload, indent=2), encoding="utf-8",
+    )
 
     env.close()
     eval_env.close()
@@ -459,7 +459,7 @@ def train(
         "checkpoint_dir": str(run_checkpoints_dir),
         "best_model_dir": str(run_dir / "best_model"),
         "monitor_dir": str(run_monitor_dir),
-        "vecnormalize_path": str(run_dir / "vecnormalize.pkl"),
+        "vecnormalize_path": str(run_dir / "vecnormalize.json"),
         "config_path": str(run_dir / "config.json"),
         "metrics_path": str(run_dir / "metrics.json"),
         "training_curves": {
