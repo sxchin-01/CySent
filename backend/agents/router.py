@@ -11,6 +11,10 @@ from backend.agents.random_agent import RandomAgent
 VALID_AGENT_NAMES = {"ppo_agent", "hf_llm_agent", "hybrid", "random"}
 
 
+def _log_fallback(stage: str, exc: Exception) -> None:
+    print(f"[AgentRouter] {stage} failed: {type(exc).__name__}: {exc}")
+
+
 class AgentRouter:
     """Router for managing PPO, HF LLM, hybrid, and random agents with fallback logic."""
 
@@ -107,15 +111,15 @@ class AgentRouter:
                 action = self.hf_agent.predict_action(state)
                 self.last_used_agent = "hybrid" if self.default_agent == "hybrid" else "hf_llm_agent"
                 return action
-            except Exception:
-                pass
+            except Exception as exc:
+                _log_fallback("HF predict", exc)
 
         if self.ppo_agent and self.ppo_agent.is_available():
             try:
                 self.last_used_agent = "hybrid" if self.default_agent == "hybrid" else "ppo_agent"
                 return self.ppo_agent.predict_action(observation, deterministic=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                _log_fallback("PPO predict", exc)
 
         self.last_used_agent = "random"
         return self.random_agent.predict_action()
@@ -149,8 +153,8 @@ class AgentRouter:
                 action = await self.hf_agent.predict_action_async(state)
                 self.last_used_agent = "hybrid" if self.default_agent == "hybrid" else "hf_llm_agent"
                 return action
-            except Exception:
-                pass
+            except Exception as exc:
+                _log_fallback("HF async predict", exc)
 
         if self.ppo_agent and self.ppo_agent.is_available():
             try:
@@ -159,8 +163,8 @@ class AgentRouter:
                 )
                 self.last_used_agent = "hybrid" if self.default_agent == "hybrid" else "ppo_agent"
                 return action
-            except Exception:
-                pass
+            except Exception as exc:
+                _log_fallback("PPO async predict", exc)
 
         self.last_used_agent = "random"
         return self.random_agent.predict_action()

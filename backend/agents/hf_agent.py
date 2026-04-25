@@ -58,7 +58,20 @@ def _is_merged_model_dir(path: str) -> bool:
 
 
 def _looks_like_local_path(value: str) -> bool:
-    return any(token in value for token in ("\\", "/", ":")) or value.startswith(".")
+    text = str(value).strip()
+    if not text:
+        return False
+
+    # Windows absolute paths (C:\...) or UNC paths.
+    if ":" in text or text.startswith("\\\\"):
+        return True
+
+    # Explicit relative/absolute filesystem paths.
+    if text.startswith((".", "..", "/", "~")):
+        return True
+
+    # Backslashes are filesystem separators; single forward slash may be a Hub repo id (owner/repo).
+    return "\\" in text
 
 
 def _read_adapter_base_model_name(adapter_path: str) -> Optional[str]:
@@ -99,6 +112,7 @@ class HFAgent:
         self.tokenizer = None
         self._using_local_model = False
         self._active_backend = "none"
+        self._local_load_attempted = False
         self._initialize_client()
 
     def _initialize_client(self) -> None:
@@ -116,12 +130,20 @@ class HFAgent:
             print(f"[HFAgent] Ready (cloud). target={target}")
             return
 
+        if self.adapter_path and self.token and os.name == "nt" and InferenceClient is not None:
+            # Local Qwen adapter loads can exceed Windows memory/paging limits; prefer hosted inference.
+            self.client = InferenceClient(model=self.model_id, token=self.token)
+            self._using_local_model = False
+            self._active_backend = "cloud"
+            print("[HFAgent] Using cloud inference on Windows to avoid local adapter memory pressure.")
+            return
+
         if self.adapter_path:
             if AutoModelForCausalLM is None or AutoTokenizer is None:
                 raise ImportError("transformers is required for local HF adapter usage.")
-            self._initialize_local_model()
-            self._active_backend = "local"
-            print(f"[HFAgent] Ready (local adapter). adapter={self.adapter_path}")
+            # Defer local model load to first HF prediction to avoid startup OOM when PPO-only paths are used.
+            self._active_backend = "local_deferred"
+            print(f"[HFAgent] Deferred local adapter load. adapter={self.adapter_path}")
             return
 
         raise RuntimeError("HF is not configured: set HF_ENDPOINT_URL or HF_ADAPTER_PATH.")
@@ -299,6 +321,22 @@ Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
         return None
 
     def _predict_action_impl(self, state: Dict[str, Any]) -> int:
+        if self.adapter_path and not self._using_local_model and self.client is None and not self._local_load_attempted:
+            self._local_load_attempted = True
+            try:
+                self._initialize_local_model()
+                self._active_backend = "local"
+                print(f"[HFAgent] Ready (local adapter). adapter={self.adapter_path}")
+            except Exception as exc:
+                if self.token and InferenceClient is not None:
+                    # If local loading fails (e.g., memory pressure), fall back to hosted inference.
+                    self.client = InferenceClient(model=self.model_id, token=self.token)
+                    self._using_local_model = False
+                    self._active_backend = "cloud"
+                    print(f"[HFAgent] Local adapter load failed ({type(exc).__name__}: {exc}); using cloud fallback.")
+                else:
+                    raise
+
         prompt = self._build_prompt(state)
         response = self._call_local_model(prompt) if self._using_local_model else self._call_hf_api(prompt)
         action_id = self._parse_action(response)
@@ -332,7 +370,7 @@ Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
 
     def is_available(self) -> bool:
         """Check if HF agent is available for use."""
-        return bool(self._using_local_model or self.client is not None)
+        return bool(self._using_local_model or self.client is not None or bool(self.adapter_path))
 
     def deployment_label(self) -> str:
         if self._using_local_model:
