@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.agents import AgentRouter
+from backend.agents.router import VALID_AGENT_NAMES
 from backend.env.security_env import ACTION_NAMES, CySentSecurityEnv
 from backend.train.benchmark import build_benchmark
 from backend.train.evaluate import evaluate
@@ -191,7 +192,7 @@ def get_state(request: Request) -> Dict[str, Any]:
 def reset(req: ResetRequest, request: Request) -> Dict[str, Any]:
     rt = _get_runtime(request)
     with rt.state_lock:
-        if req.action_source in ["ppo_agent", "hf_llm_agent"]:
+        if req.action_source in VALID_AGENT_NAMES:
             rt.agent_router.switch_agent(req.action_source)
 
         _, info = rt.env.reset(

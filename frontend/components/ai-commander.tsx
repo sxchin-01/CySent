@@ -19,18 +19,13 @@ export function AICommander({ intelligence, strategyMode }: AICommanderProps) {
   const confidencePct = Math.round(confidence * 100);
 
   return (
-    <section className="relative h-[560px] rounded-3xl border border-fuchsia-200/10 bg-[linear-gradient(170deg,rgba(15,23,42,0.92),rgba(3,7,18,0.94))] p-4 shadow-[0_20px_80px_rgba(0,0,0,0.45)] backdrop-blur-xl">
-      <motion.div
-        className="pointer-events-none absolute inset-x-4 top-3 h-px bg-gradient-to-r from-transparent via-fuchsia-300/45 to-transparent"
-        animate={{ opacity: [0.3, 0.8, 0.3] }}
-        transition={{ duration: 2.6, repeat: Infinity, ease: "easeInOut" }}
-      />
-      <header className="mb-4 flex items-center justify-between">
+    <section className="dt-panel relative flex h-[560px] flex-col overflow-hidden p-5">
+      <header className="mb-5 flex items-center justify-between">
         <div>
-          <p className="text-[10px] uppercase tracking-[0.16em] text-fuchsia-200/75">AI Command Center</p>
-          <h2 className="text-lg font-semibold text-white">Autonomous Blue Decision Core</h2>
+          <p className="dt-label text-orange-400/60">AI Command Center</p>
+          <h3 className="mt-1 text-lg font-semibold text-white">Blue Decision Core</h3>
         </div>
-        <span className="rounded-full border border-cyan-300/35 bg-cyan-400/10 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-cyan-100">
+        <span className="rounded-full bg-white/[0.05] px-3 py-1 text-[10px] uppercase tracking-[0.12em] font-medium text-white/40">
           {strategyMode}
         </span>
       </header>
@@ -38,69 +33,57 @@ export function AICommander({ intelligence, strategyMode }: AICommanderProps) {
       <motion.div
         initial="hidden"
         animate="show"
-        variants={{
-          hidden: { opacity: 0 },
-          show: { opacity: 1, transition: { staggerChildren: 0.08, delayChildren: 0.06 } },
-        }}
-        className="grid grid-cols-1 gap-3"
+        variants={{ hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.08, delayChildren: 0.06 } } }}
+        className="flex flex-1 flex-col gap-3 overflow-y-auto"
       >
-        <motion.section
+        {/* Recommended Action */}
+        <motion.div
           variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
-          whileHover={{ y: -2 }}
-          className="rounded-2xl border border-white/10 bg-white/5 p-3"
+          className="dt-tile p-4"
         >
-          <p className="text-[10px] uppercase tracking-[0.14em] text-slate-300">Recommended Action</p>
-          <p className="mt-1 text-xl font-semibold text-white">{formatAction(recommendation?.recommended_action_name)}</p>
-          <p className="mt-1 text-xs text-slate-300">{recommendation?.rationale ?? "AI recommendation updates every turn."}</p>
-        </motion.section>
+          <p className="dt-label">Recommended Action</p>
+          <p className="mt-2 text-xl font-bold text-white">{formatAction(recommendation?.recommended_action_name)}</p>
+          <p className="mt-1 text-xs text-white/35">{recommendation?.rationale ?? "AI recommendation updates every turn."}</p>
+        </motion.div>
 
-        <motion.section
-          variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
-          className="grid grid-cols-2 gap-3"
-        >
-          <motion.div whileHover={{ y: -2 }} className="rounded-2xl border border-fuchsia-300/20 bg-fuchsia-400/5 p-3">
-            <p className="text-[10px] uppercase tracking-[0.14em] text-fuchsia-100/85">Confidence</p>
+        {/* Confidence + Posture */}
+        <motion.div variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }} className="grid grid-cols-2 gap-3">
+          <div className="dt-tile flex flex-col items-center p-4">
+            <p className="dt-label self-start text-orange-400/50">Confidence</p>
             <RadialConfidence percent={confidencePct} />
-          </motion.div>
+          </div>
+          <div className="dt-tile p-4">
+            <p className="dt-label text-amber-400/50">Security Posture</p>
+            <p className="mt-3 text-base font-bold capitalize text-amber-200/90">{posture?.level ?? "guarded"}</p>
+            <p className="mt-1 line-clamp-4 text-xs text-white/30">{posture?.summary ?? "Posture summary unavailable."}</p>
+          </div>
+        </motion.div>
 
-          <motion.div whileHover={{ y: -2 }} className="rounded-2xl border border-amber-300/20 bg-amber-400/5 p-3">
-            <p className="text-[10px] uppercase tracking-[0.14em] text-amber-100/90">Security Posture</p>
-            <p className="mt-2 text-base font-semibold capitalize text-amber-50">{posture?.level ?? "guarded"}</p>
-            <p className="mt-1 line-clamp-4 text-xs text-amber-100/80">{posture?.summary ?? "Posture summary unavailable."}</p>
-          </motion.div>
-        </motion.section>
-
-        <motion.section
-          variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
-          whileHover={{ y: -2 }}
-          className="rounded-2xl border border-cyan-300/20 bg-cyan-400/5 p-3"
-        >
-          <p className="text-[10px] uppercase tracking-[0.14em] text-cyan-100/90">Threat Forecast</p>
-          <div className="mt-2 flex flex-wrap gap-1.5">
+        {/* Threat Forecast */}
+        <motion.div variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }} className="dt-tile p-4">
+          <p className="dt-label text-cyan-400/50">Threat Forecast</p>
+          <div className="mt-3 flex flex-wrap gap-1.5">
             {(forecast?.top_predictions ?? []).slice(0, 4).map((item) => (
               <span
                 key={`${item.attack}-${item.probability}`}
-                className="rounded-full border border-cyan-200/30 bg-cyan-300/10 px-2 py-1 text-[11px] text-cyan-50"
+                className="rounded-full bg-white/[0.05] px-3 py-1 text-[11px] font-medium text-white/60"
               >
-                {item.attack} {Math.round(item.probability * 100)}%
+                {item.attack} <span className="text-orange-400/80">{Math.round(item.probability * 100)}%</span>
               </span>
             ))}
-            {!forecast?.top_predictions?.length ? (
-              <span className="text-xs text-cyan-100/80">Forecast data pending.</span>
-            ) : null}
+            {!forecast?.top_predictions?.length && (
+              <span className="text-xs text-white/25">Forecast data pending.</span>
+            )}
           </div>
-        </motion.section>
+        </motion.div>
 
-        <motion.section
-          variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
-          whileHover={{ y: -2 }}
-          className="rounded-2xl border border-white/10 bg-white/5 p-3"
-        >
-          <p className="text-[10px] uppercase tracking-[0.14em] text-slate-300">Why This Action</p>
-          <p className="mt-2 line-clamp-6 text-sm leading-relaxed text-slate-100">
+        {/* Why This Action */}
+        <motion.div variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }} className="dt-tile p-4">
+          <p className="dt-label">Why This Action</p>
+          <p className="mt-2 line-clamp-6 text-sm leading-relaxed text-white/50">
             {reasoning?.explanation ?? "Reasoning context appears once the simulation executes the first action."}
           </p>
-        </motion.section>
+        </motion.div>
       </motion.div>
     </section>
   );
@@ -114,24 +97,23 @@ function RadialConfidence({ percent }: { percent: number }) {
 
   return (
     <div className="mt-2 flex items-center justify-center">
-      <svg width="120" height="120" viewBox="0 0 120 120" className="drop-shadow-[0_0_20px_rgba(244,114,182,0.35)]">
-        <circle cx="60" cy="60" r={radius} fill="none" stroke="rgba(244,114,182,0.15)" strokeWidth="10" />
+      <svg width="110" height="110" viewBox="0 0 120 120" className="drop-shadow-[0_0_20px_rgba(240,100,48,0.2)]">
+        <circle cx="60" cy="60" r={radius} fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="7" />
         <motion.circle
-          cx="60"
-          cy="60"
-          r={radius}
-          fill="none"
-          stroke="rgba(244,114,182,0.95)"
-          strokeWidth="10"
-          strokeLinecap="round"
+          cx="60" cy="60" r={radius} fill="none"
+          stroke="url(#conf-grad)" strokeWidth="7" strokeLinecap="round"
           strokeDasharray={circumference}
           animate={{ strokeDashoffset: offset }}
           transition={{ duration: 0.45 }}
           transform="rotate(-90 60 60)"
         />
-        <text x="60" y="64" textAnchor="middle" className="fill-fuchsia-50 text-lg font-semibold">
-          {clamped}%
-        </text>
+        <defs>
+          <linearGradient id="conf-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#f06530" />
+            <stop offset="100%" stopColor="#e84525" />
+          </linearGradient>
+        </defs>
+        <text x="60" y="64" textAnchor="middle" className="fill-white text-lg font-bold">{clamped}%</text>
       </svg>
     </div>
   );
@@ -139,8 +121,5 @@ function RadialConfidence({ percent }: { percent: number }) {
 
 function formatAction(value?: string): string {
   if (!value) return "Pending";
-  return value
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
+  return value.split("_").map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
 }

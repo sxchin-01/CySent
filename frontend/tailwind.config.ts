@@ -20,7 +20,8 @@ const config: Config = {
         ring: "hsl(var(--ring))",
       },
       boxShadow: {
-        glow: "0 0 0 1px rgba(0,0,0,0.08), 0 8px 30px rgba(17,34,17,0.18)",
+        glow: "0 1px 2px rgba(0,0,0,0.3), 0 8px 32px rgba(0,0,0,0.25)",
+        "card-hover": "0 8px 40px rgba(0,0,0,0.4), 0 0 0 1px rgba(148,163,184,0.06)",
       },
     },
   },

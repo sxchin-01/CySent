@@ -28,14 +28,6 @@ const initialState: EnvState = {
   termination_reason: "active",
 };
 
-const themeByScenario: Record<string, string> = {
-  bank: "from-[#070b15] via-[#0e1a30] to-[#201538]",
-  hospital: "from-[#060f18] via-[#0f2433] to-[#16383f]",
-  saas: "from-[#090f1d] via-[#121f35] to-[#1e3252]",
-  government: "from-[#080f1f] via-[#122136] to-[#2a1e36]",
-  manufacturing: "from-[#0a0f16] via-[#1a232a] to-[#2a2321]",
-};
-
 export default function HomePage() {
   const [state, setState] = useState<EnvState>(initialState);
   const [scenario, setScenario] = useState("bank");
@@ -64,9 +56,7 @@ export default function HomePage() {
 
   const activeState = replayPlaying && frames.length > 0 ? frames[Math.min(replayIndex, frames.length - 1)].state : state;
 
-  useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
+  useEffect(() => { stateRef.current = state; }, [state]);
 
   useEffect(() => {
     const boot = async () => {
@@ -75,21 +65,14 @@ export default function HomePage() {
         const live = await fetchState();
         setState(live);
         stateRef.current = live;
-        setTimeline([
-          {
-            turn: live.step,
-            reward: 0,
-            risk: live.network_risk,
-            uptime: uptimeFromAssets(live.assets),
-            breaches: breachesFromAssets(live.assets),
-            securityScore: securityScore(live.network_risk),
-          },
-        ]);
+        setTimeline([{
+          turn: live.step, reward: 0, risk: live.network_risk,
+          uptime: uptimeFromAssets(live.assets), breaches: breachesFromAssets(live.assets),
+          securityScore: securityScore(live.network_risk),
+        }]);
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : "Unable to load backend state.");
-      } finally {
-        setBooting(false);
-      }
+      } finally { setBooting(false); }
     };
     void boot();
   }, []);
@@ -100,15 +83,8 @@ export default function HomePage() {
       liveIntervalRef.current = null;
       return;
     }
-
-    liveIntervalRef.current = setInterval(() => {
-      void runLiveStep();
-    }, 1050);
-
-    return () => {
-      if (liveIntervalRef.current) clearInterval(liveIntervalRef.current);
-      liveIntervalRef.current = null;
-    };
+    liveIntervalRef.current = setInterval(() => { void runLiveStep(); }, 1050);
+    return () => { if (liveIntervalRef.current) clearInterval(liveIntervalRef.current); liveIntervalRef.current = null; };
   }, [running, busy, scenario, difficulty, attacker, strategyMode]);
 
   useEffect(() => {
@@ -117,22 +93,14 @@ export default function HomePage() {
       replayIntervalRef.current = null;
       return;
     }
-
     const intervalMs = Math.max(120, 700 / replaySpeed);
     replayIntervalRef.current = setInterval(() => {
       setReplayIndex((prev) => {
-        if (prev >= frames.length - 1) {
-          setReplayPlaying(false);
-          return prev;
-        }
+        if (prev >= frames.length - 1) { setReplayPlaying(false); return prev; }
         return prev + 1;
       });
     }, intervalMs);
-
-    return () => {
-      if (replayIntervalRef.current) clearInterval(replayIntervalRef.current);
-      replayIntervalRef.current = null;
-    };
+    return () => { if (replayIntervalRef.current) clearInterval(replayIntervalRef.current); replayIntervalRef.current = null; };
   }, [replayPlaying, replaySpeed, frames.length]);
 
   const runLiveStep = async () => {
@@ -143,252 +111,174 @@ export default function HomePage() {
       const result = await step();
       const prev = stateRef.current;
       const resolvedState: EnvState = {
-        episode_id: result.episode_id,
-        step: prev.step + 1,
-        network_risk: result.network_risk,
-        risk_breakdown: result.risk_breakdown,
-        assets: result.assets,
-        last_action: result.action_name,
-        red_log: result.red_log,
-        profile: result.profile,
-        intelligence: result.intelligence,
-        events: result.events,
-        narrative: result.narrative,
-        termination_reason: result.termination_reason,
+        episode_id: result.episode_id, step: prev.step + 1, network_risk: result.network_risk,
+        risk_breakdown: result.risk_breakdown, assets: result.assets, last_action: result.action_name,
+        red_log: result.red_log, profile: result.profile, intelligence: result.intelligence,
+        events: result.events, narrative: result.narrative, termination_reason: result.termination_reason,
       };
-
       stateRef.current = resolvedState;
       setState(resolvedState);
-      setActiveAgentLabel(result.active_agent ?? (actionSource === "ppo_agent" ? "PPO Defender" : "Colab LLM Defender"));
-
-      setIncidents((prevLines) => [incidentLine(resolvedState, result), ...prevLines].slice(0, 50));
-      setTimeline((prevPoints) => [
-        ...prevPoints,
-        {
-          turn: resolvedState.step,
-          reward: result.reward,
-          risk: result.network_risk,
-          uptime: uptimeFromAssets(result.assets),
-          breaches: breachesFromAssets(result.assets),
-          securityScore: securityScore(result.network_risk),
-        },
-      ].slice(-200));
-
-      setFrames((prevFrames) => [
-        ...prevFrames,
-        {
-          turn: resolvedState.step,
-          state: resolvedState,
-          result,
-          timestamp: Date.now(),
-        },
-      ].slice(-250));
-
-      if (result.terminated || result.truncated) {
-        setRunning(false);
-      }
+      setActiveAgentLabel(result.active_agent ?? AGENT_LABELS[actionSource] ?? "PPO Defender");
+      setIncidents((p) => [incidentLine(resolvedState, result), ...p].slice(0, 50));
+      setTimeline((p) => [...p, {
+        turn: resolvedState.step, reward: result.reward, risk: result.network_risk,
+        uptime: uptimeFromAssets(result.assets), breaches: breachesFromAssets(result.assets),
+        securityScore: securityScore(result.network_risk),
+      }].slice(-200));
+      setFrames((p) => [...p, { turn: resolvedState.step, state: resolvedState, result, timestamp: Date.now() }].slice(-250));
+      if (result.terminated || result.truncated) setRunning(false);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Step request failed.");
       setRunning(false);
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   };
 
   const handleReset = async () => {
-    setRunning(false);
-    setReplayPlaying(false);
+    setRunning(false); setReplayPlaying(false);
     try {
       setErrorMessage(null);
       const synced = await resetSimulation({
-        seed: 42,
-        scenario,
-        difficulty,
-        attacker,
-        strategy_mode: strategyMode,
-        action_source: actionSource,
-        intelligence_enabled: true,
+        seed: 42, scenario, difficulty, attacker, strategy_mode: strategyMode,
+        action_source: actionSource, intelligence_enabled: true,
       });
-      setState(synced);
-      stateRef.current = synced;
-      setIncidents([]);
-      setTimeline([
-        {
-          turn: synced.step,
-          reward: 0,
-          risk: synced.network_risk,
-          uptime: uptimeFromAssets(synced.assets),
-          breaches: breachesFromAssets(synced.assets),
-          securityScore: securityScore(synced.network_risk),
-        },
-      ]);
-      setFrames([]);
-      setReplayIndex(0);
-      setActiveAgentLabel(actionSource === "ppo_agent" ? "PPO Defender" : "Colab LLM Defender");
-    } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : "Reset request failed.");
-    }
+      setState(synced); stateRef.current = synced; setIncidents([]);
+      setTimeline([{ turn: synced.step, reward: 0, risk: synced.network_risk, uptime: uptimeFromAssets(synced.assets), breaches: breachesFromAssets(synced.assets), securityScore: securityScore(synced.network_risk) }]);
+      setFrames([]); setReplayIndex(0);
+      setActiveAgentLabel(AGENT_LABELS[actionSource] ?? "PPO Defender");
+    } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Reset request failed."); }
   };
 
   const handleStartPause = async () => {
-    if (running) {
-      setRunning(false);
-      return;
-    }
-
+    if (running) { setRunning(false); return; }
     try {
       setErrorMessage(null);
       const synced = await resetSimulation({
-        seed: 42,
-        scenario,
-        difficulty,
-        attacker,
-        strategy_mode: strategyMode,
-        action_source: actionSource,
-        intelligence_enabled: true,
+        seed: 42, scenario, difficulty, attacker, strategy_mode: strategyMode,
+        action_source: actionSource, intelligence_enabled: true,
       });
-      setState(synced);
-      stateRef.current = synced;
-      setIncidents([]);
-      setTimeline([
-        {
-          turn: synced.step,
-          reward: 0,
-          risk: synced.network_risk,
-          uptime: uptimeFromAssets(synced.assets),
-          breaches: breachesFromAssets(synced.assets),
-          securityScore: securityScore(synced.network_risk),
-        },
-      ]);
-      setFrames([]);
-      setReplayIndex(0);
-      setActiveAgentLabel(actionSource === "ppo_agent" ? "PPO Defender" : "Colab LLM Defender");
+      setState(synced); stateRef.current = synced; setIncidents([]);
+      setTimeline([{ turn: synced.step, reward: 0, risk: synced.network_risk, uptime: uptimeFromAssets(synced.assets), breaches: breachesFromAssets(synced.assets), securityScore: securityScore(synced.network_risk) }]);
+      setFrames([]); setReplayIndex(0);
+      setActiveAgentLabel(AGENT_LABELS[actionSource] ?? "PPO Defender");
       setRunning(true);
-    } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : "Unable to start simulation.");
-    }
+    } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Unable to start simulation."); }
   };
 
-  const themeClass = themeByScenario[scenario] ?? themeByScenario.bank;
   const currentConfidence = activeState.intelligence?.reasoning?.decision_confidence ?? 0;
   const security = useMemo(() => securityScore(activeState.network_risk), [activeState.network_risk]);
   const underAttack = Boolean(activeState.red_log?.attack && activeState.red_log?.attack !== "no_attack");
 
   return (
-    <main className={`min-h-screen bg-gradient-to-br ${themeClass} text-slate-100`}>
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_8%_10%,rgba(34,211,238,0.12),transparent_36%),radial-gradient(circle_at_88%_2%,rgba(244,114,182,0.12),transparent_28%)]" />
+    <main className="relative min-h-screen bg-[#050508] text-white/90">
+      {/* Cinematic warm glow — Darktrace hero orb */}
+      <div className="dt-glow-orb" style={{ top: "5%", left: "30%" }} />
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(ellipse_50%_35%_at_50%_0%,rgba(200,80,20,0.05),transparent)]" />
+
+      <Topbar
+        scenario={scenario} difficulty={difficulty} attacker={attacker} strategyMode={strategyMode}
+        actionSource={actionSource} activeAgentLabel={activeAgentLabel} running={running}
+        onScenarioChange={setScenario} onDifficultyChange={setDifficulty} onAttackerChange={setAttacker}
+        onStrategyChange={setStrategyMode} onActionSourceChange={setActionSource}
+        onStartPause={() => void handleStartPause()} onReset={() => void handleReset()}
+      />
+
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, ease: "easeOut" }}
-        className="mx-auto flex w-full max-w-[1720px] flex-col gap-4 px-4 py-4 lg:px-8"
+        transition={{ duration: 0.5 }}
+        className="relative z-10 mx-auto flex w-full max-w-[1720px] flex-col gap-6 px-6 py-6 lg:px-10"
       >
-        <Topbar
-          scenario={scenario}
-          difficulty={difficulty}
-          attacker={attacker}
-          strategyMode={strategyMode}
-          actionSource={actionSource}
-          activeAgentLabel={activeAgentLabel}
-          running={running}
-          onScenarioChange={setScenario}
-          onDifficultyChange={setDifficulty}
-          onAttackerChange={setAttacker}
-          onStrategyChange={setStrategyMode}
-          onActionSourceChange={setActionSource}
-          onStartPause={() => void handleStartPause()}
-          onReset={() => void handleReset()}
-        />
-
-        {booting ? (
-          <div className="rounded-2xl border border-cyan-200/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">
+        {booting && (
+          <div className="rounded-xl border border-orange-500/20 bg-orange-500/[0.06] px-5 py-3.5 text-sm text-orange-300/80">
             Connecting to CySent backend...
           </div>
-        ) : null}
-
-        {errorMessage ? (
-          <div className="rounded-2xl border border-rose-300/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+        )}
+        {errorMessage && (
+          <div className="rounded-xl border border-red-500/20 bg-red-500/[0.06] px-5 py-3.5 text-sm text-red-300/80">
             {errorMessage}
           </div>
-        ) : null}
+        )}
 
+        {/* ── Hero section: headline + key stats ──────────────────── */}
+        <section className="flex flex-col gap-2 pb-2">
+          <h2 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
+            Autonomous Cyber Defense
+          </h2>
+          <p className="max-w-2xl text-sm leading-relaxed text-white/40">
+            Real-time AI-driven threat detection, response orchestration, and blue-team policy optimization across your simulated enterprise network.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-4">
+            <StatPill label="Turn" value={String(activeState.step)} />
+            <StatPill label="Risk" value={activeState.network_risk.toFixed(3)} />
+            <StatPill label="Score" value={`${security}`} />
+            <StatPill label="Confidence" value={`${Math.round(currentConfidence * 100)}%`} />
+          </div>
+        </section>
+
+        {/* ── Main grid ───────────────────────────────────────────── */}
         <motion.section
           initial={{ opacity: 0, y: 14 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.08, duration: 0.45 }}
-          className="grid grid-cols-1 gap-4 xl:grid-cols-12"
+          className="grid grid-cols-1 gap-6 xl:grid-cols-12"
         >
-          <motion.section
+          {/* Network Map */}
+          <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.14, duration: 0.42 }}
             className="xl:col-span-8"
           >
-            <article className="rounded-3xl border border-cyan-100/10 bg-black/25 p-4 backdrop-blur-xl">
-              <div className="mb-3 flex items-center justify-between">
+            <div className="dt-panel overflow-hidden p-5">
+              <div className="mb-4 flex items-center justify-between">
                 <div>
-                  <p className="text-[10px] uppercase tracking-[0.18em] text-cyan-200/75">CySent Battlefield</p>
-                  <h2 className="text-2xl font-semibold text-white">Live Network Operations Theater</h2>
+                  <p className="dt-label">Network Operations</p>
+                  <h3 className="mt-1 text-lg font-semibold text-white">Live Battlefield</h3>
                 </div>
                 <motion.div
-                  animate={underAttack ? { boxShadow: ["0 0 0 rgba(248,113,113,0)", "0 0 24px rgba(248,113,113,0.5)", "0 0 0 rgba(248,113,113,0)"] } : {}}
-                  transition={{ duration: 1.6, repeat: underAttack ? Infinity : 0 }}
-                  className="rounded-full border border-cyan-200/30 bg-cyan-300/10 px-3 py-1 text-xs text-cyan-100"
+                  animate={underAttack ? { boxShadow: ["0 0 0 rgba(248,113,113,0)", "0 0 24px rgba(240,100,48,0.4)", "0 0 0 rgba(248,113,113,0)"] } : {}}
+                  transition={{ duration: 1.8, repeat: underAttack ? Infinity : 0 }}
+                  className="rounded-full bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-white/50 ring-1 ring-white/[0.06]"
                 >
                   Risk {activeState.network_risk.toFixed(3)}
                 </motion.div>
               </div>
 
-              <NetworkGraph
-                assets={activeState.assets}
-                redTarget={String(activeState.red_log?.target ?? "")}
-                underAttack={underAttack}
-              />
+              <NetworkGraph assets={activeState.assets} redTarget={String(activeState.red_log?.target ?? "")} underAttack={underAttack} />
 
-              {activeState.assets.length === 0 ? (
-                <p className="mt-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">
+              {activeState.assets.length === 0 && (
+                <p className="mt-4 rounded-lg bg-white/[0.03] px-4 py-3 text-xs text-white/30">
                   No asset state available yet. Reset or Start to initialize the simulation feed.
                 </p>
-              ) : null}
-            </article>
-          </motion.section>
+              )}
+            </div>
+          </motion.div>
 
-          <motion.aside
+          {/* AI Commander */}
+          <motion.div
             initial={{ opacity: 0, x: 12 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.2, duration: 0.45 }}
             className="xl:col-span-4"
           >
             <AICommander intelligence={activeState.intelligence} strategyMode={strategyMode} />
-          </motion.aside>
+          </motion.div>
         </motion.section>
 
+        {/* ── Metrics + Replay ─────────────────────────────────────── */}
         <motion.section
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.26, duration: 0.45 }}
-          className="grid grid-cols-1 gap-4 xl:grid-cols-12"
+          className="grid grid-cols-1 gap-6 xl:grid-cols-12"
         >
           <div className="xl:col-span-9">
             <MetricsPanel timeline={timeline} />
           </div>
-
-          <div className="space-y-3 xl:col-span-3">
-            <article className="rounded-2xl border border-cyan-100/10 bg-slate-950/65 p-4 backdrop-blur-xl">
-              <h3 className="text-xs uppercase tracking-[0.14em] text-slate-300">Mission Snapshot</h3>
-              <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                <Stat label="Turn" value={String(activeState.step)} />
-                <Stat label="Risk" value={activeState.network_risk.toFixed(3)} />
-                <Stat label="SecurityScore" value={`${security}`} />
-                <Stat label="Confidence" value={`${Math.round(currentConfidence * 100)}%`} />
-              </div>
-            </article>
-
+          <div className="space-y-4 xl:col-span-3">
             <ReplayControls
-              playing={replayPlaying}
-              speed={replaySpeed}
-              canStepBack={replayIndex > 0}
-              canStepForward={replayIndex < frames.length - 1}
+              playing={replayPlaying} speed={replaySpeed}
+              canStepBack={replayIndex > 0} canStepForward={replayIndex < frames.length - 1}
               onPlayPause={() => setReplayPlaying((v) => !v)}
               onStepBack={() => setReplayIndex((idx) => Math.max(0, idx - 1))}
               onStepForward={() => setReplayIndex((idx) => Math.min(frames.length - 1, idx + 1))}
@@ -398,19 +288,17 @@ export default function HomePage() {
         </motion.section>
       </motion.div>
 
+      {/* ── Timeline toggle ──────────────────────────────────────── */}
       <div className="fixed bottom-5 right-5 z-40">
         <motion.button
           onClick={() => setTimelineCollapsed((v) => !v)}
           whileHover={{ y: -2 }}
           whileTap={{ scale: 0.98 }}
-          className="group flex items-center gap-2 rounded-full border border-cyan-200/30 bg-slate-950/80 px-3 py-2 text-xs uppercase tracking-[0.14em] text-cyan-100 backdrop-blur-xl hover:bg-slate-900"
+          className="dt-btn-ghost flex items-center gap-2 rounded-full px-4 py-2 text-[11px] uppercase tracking-[0.1em] backdrop-blur-xl"
         >
-          <Radar size={14} />
+          <Radar size={13} />
           Timeline
-          <ChevronRight
-            size={14}
-            className={`transition-transform duration-300 ${timelineCollapsed ? "rotate-0" : "rotate-180"}`}
-          />
+          <ChevronRight size={13} className={`transition-transform duration-300 ${timelineCollapsed ? "rotate-0" : "rotate-180"}`} />
         </motion.button>
       </div>
 
@@ -418,7 +306,7 @@ export default function HomePage() {
         initial={false}
         animate={{ x: timelineCollapsed ? "86%" : "0%" }}
         transition={{ duration: 0.3 }}
-        className="fixed right-0 top-[78px] z-30 h-[calc(100vh-102px)] w-[370px] max-w-[88vw] pr-3"
+        className="fixed right-0 top-[60px] z-30 h-[calc(100vh-80px)] w-[370px] max-w-[88vw] pr-3"
       >
         <IncidentFeed incidents={incidents} collapsed={timelineCollapsed} onToggle={() => setTimelineCollapsed((v) => !v)} />
       </motion.aside>
@@ -426,11 +314,12 @@ export default function HomePage() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+/* ── Stat pill (Darktrace-style inline stat) ──────────────────── */
+function StatPill({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-white/5 p-2">
-      <p className="text-[10px] uppercase tracking-[0.12em] text-slate-300">{label}</p>
-      <p className="mt-1 text-base font-semibold text-slate-100">{value}</p>
+    <div className="flex items-baseline gap-2">
+      <span className="text-2xl font-bold tracking-tight text-white">{value}</span>
+      <span className="text-xs font-medium text-white/30">{label}</span>
     </div>
   );
 }
@@ -446,16 +335,21 @@ function incidentLine(nextState: EnvState, result: StepResult): string {
 
 function uptimeFromAssets(assets: EnvState["assets"]): number {
   if (!assets.length) return 1;
-  const up = assets.filter((a) => a.uptime_status).length;
-  return up / assets.length;
+  return assets.filter((a) => a.uptime_status).length / assets.length;
 }
 
 function breachesFromAssets(assets: EnvState["assets"]): number {
   if (!assets.length) return 0;
-  const breached = assets.filter((a) => a.compromised).length;
-  return breached / assets.length;
+  return assets.filter((a) => a.compromised).length / assets.length;
 }
 
 function securityScore(networkRisk: number): number {
   return Math.max(0, Math.round((1 - networkRisk) * 100));
 }
+
+const AGENT_LABELS: Record<string, string> = {
+  ppo_agent: "PPO Defender",
+  hf_llm_agent: "Colab LLM Defender",
+  hybrid: "Hybrid Defender",
+  random: "Random Baseline",
+};

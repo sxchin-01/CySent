@@ -20,43 +20,52 @@ type MetricsPanelProps = {
   timeline: TimelinePoint[];
 };
 
+const tooltipStyle = {
+  background: "rgba(10, 10, 14, 0.95)",
+  border: "1px solid rgba(255, 255, 255, 0.08)",
+  borderRadius: 10,
+  fontSize: 11,
+  color: "rgba(255,255,255,0.7)",
+  boxShadow: "0 8px 40px rgba(0,0,0,0.6)",
+};
+
 export function MetricsPanel({ timeline }: MetricsPanelProps) {
   return (
-    <section className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-      <ChartCard title="Risk Score Over Time">
+    <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <ChartCard title="Risk Score" accentColor="#f06530">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={timeline}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#253448" opacity={0.35} />
-            <XAxis dataKey="turn" stroke="#8fa8bd" />
-            <YAxis domain={[0, 1]} stroke="#8fa8bd" />
-            <Tooltip />
-            <Line type="monotone" dataKey="risk" stroke="#22d3ee" strokeWidth={2.6} dot={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+            <XAxis dataKey="turn" stroke="rgba(255,255,255,0.15)" fontSize={10} />
+            <YAxis domain={[0, 1]} stroke="rgba(255,255,255,0.15)" fontSize={10} />
+            <Tooltip contentStyle={tooltipStyle} />
+            <Line type="monotone" dataKey="risk" stroke="#f06530" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </ChartCard>
 
-      <ChartCard title="Uptime and Breach Attempts">
+      <ChartCard title="Uptime & Breaches" accentColor="#4ade80">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={timeline}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#253448" opacity={0.35} />
-            <XAxis dataKey="turn" stroke="#8fa8bd" />
-            <YAxis domain={[0, 1]} stroke="#8fa8bd" />
-            <Tooltip />
-            <Line type="monotone" dataKey="uptime" stroke="#4ade80" strokeWidth={2.6} dot={false} />
-            <Line type="monotone" dataKey="breaches" stroke="#f97316" strokeWidth={2.6} dot={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+            <XAxis dataKey="turn" stroke="rgba(255,255,255,0.15)" fontSize={10} />
+            <YAxis domain={[0, 1]} stroke="rgba(255,255,255,0.15)" fontSize={10} />
+            <Tooltip contentStyle={tooltipStyle} />
+            <Line type="monotone" dataKey="uptime" stroke="#4ade80" strokeWidth={2} dot={false} />
+            <Line type="monotone" dataKey="breaches" stroke="#f97316" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </ChartCard>
 
-      <ChartCard title="SecurityScore and Reward Trend">
+      <ChartCard title="Score & Reward" accentColor="#a78bfa">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={timeline}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#253448" opacity={0.35} />
-            <XAxis dataKey="turn" stroke="#8fa8bd" />
-            <YAxis stroke="#8fa8bd" />
-            <Tooltip />
-            <Area type="monotone" dataKey="securityScore" stroke="#f43f5e" fill="#f43f5e" fillOpacity={0.3} />
-            <Area type="monotone" dataKey="reward" stroke="#a78bfa" fill="#a78bfa" fillOpacity={0.24} />
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+            <XAxis dataKey="turn" stroke="rgba(255,255,255,0.15)" fontSize={10} />
+            <YAxis stroke="rgba(255,255,255,0.15)" fontSize={10} />
+            <Tooltip contentStyle={tooltipStyle} />
+            <Area type="monotone" dataKey="securityScore" stroke="#f43f5e" fill="#f43f5e" fillOpacity={0.08} />
+            <Area type="monotone" dataKey="reward" stroke="#a78bfa" fill="#a78bfa" fillOpacity={0.06} />
           </AreaChart>
         </ResponsiveContainer>
       </ChartCard>
@@ -64,11 +73,15 @@ export function MetricsPanel({ timeline }: MetricsPanelProps) {
   );
 }
 
-function ChartCard({ title, children }: { title: string; children: ReactNode }) {
+function ChartCard({ title, accentColor, children }: { title: string; accentColor: string; children: ReactNode }) {
   return (
-    <article className="h-[250px] rounded-2xl border border-cyan-100/10 bg-slate-950/70 p-3 shadow-[0_12px_40px_rgba(0,0,0,0.35)] backdrop-blur-xl">
-      <h3 className="mb-2 text-[11px] uppercase tracking-[0.16em] text-slate-300">{title}</h3>
-      <div className="h-[200px]">{children}</div>
+    <article className="dt-panel relative h-[250px] overflow-hidden p-4">
+      <div
+        className="pointer-events-none absolute left-0 top-0 h-[2px] w-full"
+        style={{ background: `linear-gradient(90deg, transparent, ${accentColor}40, transparent)` }}
+      />
+      <h3 className="dt-label mb-3">{title}</h3>
+      <div className="h-[190px]">{children}</div>
     </article>
   );
 }

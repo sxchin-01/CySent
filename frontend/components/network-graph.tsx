@@ -60,13 +60,10 @@ export function NetworkGraph({ assets, redTarget, underAttack = false }: Props) 
   const edgeElements = useMemo(
     () => {
       const nodeIds = new Set(assets.map((asset) => asset.name));
-
       return EDGE_MAP.filter(([source, target]) => nodeIds.has(source) && nodeIds.has(target)).map(
         ([source, target], i) => {
           const active = underAttack && redTarget && (source === redTarget || target === redTarget);
-          return {
-            data: { id: `e${i}`, source, target, active: active ? "yes" : "no" },
-          };
+          return { data: { id: `e${i}`, source, target, active: active ? "yes" : "no" } };
         },
       );
     },
@@ -78,19 +75,21 @@ export function NetworkGraph({ assets, redTarget, underAttack = false }: Props) 
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4 }}
-      className="relative h-[560px] w-full overflow-hidden rounded-3xl border border-cyan-100/10 bg-slate-950/40"
+      className="relative h-[560px] w-full overflow-hidden rounded-xl bg-black/60 ring-1 ring-white/[0.04]"
     >
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(34,211,238,0.08),transparent_38%),radial-gradient(circle_at_82%_0%,rgba(244,114,182,0.08),transparent_35%)]" />
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.08)_1px,transparent_1px)] bg-[size:38px_38px] opacity-30" />
+      {/* Grid overlay */}
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:48px_48px]" />
+
+      {/* Focal glow */}
       <motion.div
-        className="pointer-events-none absolute -left-20 top-1/3 h-40 w-40 rounded-full bg-cyan-400/10 blur-3xl"
-        animate={{ x: [0, 30, 0], opacity: [0.3, 0.55, 0.3] }}
-        transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+        className="pointer-events-none absolute left-1/3 top-1/4 h-60 w-60 rounded-full bg-orange-500/[0.04] blur-[80px]"
+        animate={{ x: [0, 40, 0], opacity: [0.4, 0.7, 0.4] }}
+        transition={{ duration: 10, repeat: Infinity, ease: "easeInOut" }}
       />
       <motion.div
-        className="pointer-events-none absolute left-0 top-0 h-12 w-full bg-gradient-to-b from-cyan-300/20 to-transparent"
-        animate={{ y: [-40, 560, -40], opacity: [0, 0.6, 0] }}
-        transition={{ duration: 5.8, repeat: Infinity, ease: "linear" }}
+        className="pointer-events-none absolute bottom-1/4 right-1/4 h-40 w-40 rounded-full bg-cyan-500/[0.03] blur-[60px]"
+        animate={{ x: [0, -30, 0], opacity: [0.3, 0.5, 0.3] }}
+        transition={{ duration: 12, repeat: Infinity, ease: "easeInOut" }}
       />
 
       <CytoscapeComponent
@@ -112,24 +111,27 @@ export function NetworkGraph({ assets, redTarget, underAttack = false }: Props) 
               "text-valign": "center",
               "text-halign": "center",
               "background-color": "#10b981",
-              width: 56,
-              height: 56,
-              color: "#f8fafc",
+              width: 52,
+              height: 52,
+              color: "#ffffff",
               "text-wrap": "wrap",
               "text-max-width": "100px",
-              "border-width": 1.2,
-              "border-color": "#d1fae5",
+              "border-width": 1.5,
+              "border-color": "rgba(255,255,255,0.1)",
               "overlay-opacity": 0,
               "text-margin-y": 34,
+              "shadow-color": "#10b981",
+              "shadow-blur": 12,
+              "shadow-opacity": 0.3,
             },
           },
           {
             selector: "node[state='patched']",
             style: {
-              "background-color": "#2563eb",
+              "background-color": "#3b82f6",
               "shadow-color": "#60a5fa",
-              "shadow-blur": 18,
-              "shadow-opacity": 0.75,
+              "shadow-blur": 20,
+              "shadow-opacity": 0.6,
             },
           },
           {
@@ -137,38 +139,41 @@ export function NetworkGraph({ assets, redTarget, underAttack = false }: Props) 
             style: {
               "background-color": "#f59e0b",
               "shadow-color": "#f59e0b",
-              "shadow-blur": 16,
-              "shadow-opacity": 0.65,
+              "shadow-blur": 20,
+              "shadow-opacity": 0.6,
             },
           },
           {
             selector: "node[state='isolated']",
-            style: { "background-color": "#6b7280", "border-color": "#94a3b8" },
+            style: {
+              "background-color": "#4b5563",
+              "border-color": "rgba(255,255,255,0.08)",
+              "shadow-opacity": 0,
+            },
           },
           {
             selector: "node[state='compromised']",
             style: {
-              "background-color": "#dc2626",
-              color: "#fff8f8",
-              "shadow-color": "#f43f5e",
-              "shadow-blur": 22,
-              "shadow-opacity": 0.85,
+              "background-color": "#ef4444",
+              "shadow-color": "#ef4444",
+              "shadow-blur": 28,
+              "shadow-opacity": 0.8,
             },
           },
           {
             selector: "node[critical='yes']",
             style: {
-              "border-color": "#fbbf24",
-              "border-width": 2.6,
+              "border-color": "#f59e0b",
+              "border-width": 3,
             },
           },
           {
             selector: "edge",
             style: {
-              width: 2,
-              opacity: 0.55,
-              "line-color": "#64748b",
-              "target-arrow-color": "#64748b",
+              width: 1.5,
+              opacity: 0.35,
+              "line-color": "rgba(255,255,255,0.15)",
+              "target-arrow-color": "rgba(255,255,255,0.15)",
               "target-arrow-shape": "triangle",
               "curve-style": "bezier",
             },
@@ -176,22 +181,22 @@ export function NetworkGraph({ assets, redTarget, underAttack = false }: Props) 
           {
             selector: "edge[active='yes']",
             style: {
-              width: 4,
+              width: 3.5,
               opacity: 1,
-              "line-color": "#f59e0b",
-              "target-arrow-color": "#f59e0b",
+              "line-color": "#f06530",
+              "target-arrow-color": "#f06530",
               "line-style": "dashed",
               "line-dash-pattern": [8, 6],
-              "shadow-blur": 12,
-              "shadow-color": "#f59e0b",
+              "shadow-blur": 16,
+              "shadow-color": "#f06530",
               "shadow-opacity": 0.7,
             },
           },
         ]}
       />
 
-      <div className="pointer-events-none absolute bottom-2 left-3 rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-slate-300">
-        Battlefield Live / Zoom + Pan Enabled
+      <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/40 px-2.5 py-1 text-[10px] uppercase tracking-[0.1em] text-white/20 backdrop-blur">
+        Battlefield Live / Zoom + Pan
       </div>
     </motion.div>
   );

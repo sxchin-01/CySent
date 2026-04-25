@@ -21,8 +21,8 @@ CySent is a cybersecurity simulation and decision platform where autonomous defe
 | Agent | Mode | Use Case |
 |-------|------|----------|
 | PPO | Default | Stable, production-ready RL baseline |
-| Qwen LoRA | Optional | Fine-tuned LLM for contextual action selection |
-| Phi-3.5 LoRA | Optional | Live RL-trained LLM (REINFORCE + CySent env) |
+| Qwen LoRA (SFT) | Optional | Fine-tuned LLM trained on static dataset |
+| Qwen LoRA (RL) | Optional | Live RL-trained LLM (REINFORCE + CySent env) |
 | Hybrid | Mixed | Risk-based switching between PPO and LLM |
 
 ## How to Use
@@ -48,8 +48,7 @@ Set these in **Space Secrets** (Settings > Repo Secrets):
 | GitHub (full project) | [sxchin-01/CySent](https://github.com/sxchin-01/CySent) |
 | Adapter (Qwen LoRA) | [sxchin01/CySent-adapter](https://huggingface.co/sxchin01/CySent-adapter) |
 | Colab: Qwen SFT | [CySent_Unsloth_Train.ipynb](https://github.com/sxchin-01/CySent/blob/main/notebooks/CySent_Unsloth_Train.ipynb) |
-| Colab: Phi-3.5 Live RL | [CySent_Phi_LiveRL.ipynb](https://github.com/sxchin-01/CySent/blob/main/notebooks/CySent_Phi_LiveRL.ipynb) |
-
+| Colab: Qwen Live RL | [CySent_Qwen_LiveRL.ipynb](https://github.com/sxchin-01/CySent/blob/main/notebooks/CySent_Qwen_LiveRL.ipynb) |
 ## Running Locally
 
 ```bash

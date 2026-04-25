@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -23,6 +24,39 @@ from backend.env.security_env import ACTION_NAMES, CySentSecurityEnv
 ACTION_LIST = [ACTION_NAMES[i] for i in sorted(ACTION_NAMES.keys())]
 NUM_ACTIONS = len(ACTION_LIST)
 ACTION_TO_ID = {name: i for i, name in enumerate(ACTION_LIST)}
+
+# Filled on first use; avoids re-tokenizing 12 actions every env step.
+_ACTION_TOKEN_IDS_CACHE: Optional[List[int]] = None
+
+
+def _action_token_ids(tokenizer: Any) -> List[int]:
+    global _ACTION_TOKEN_IDS_CACHE
+    if _ACTION_TOKEN_IDS_CACHE is None:
+        _ACTION_TOKEN_IDS_CACHE = []
+        for name in ACTION_LIST:
+            toks = tokenizer.encode(name, add_special_tokens=False)
+            _ACTION_TOKEN_IDS_CACHE.append(toks[0] if toks else 0)
+    return _ACTION_TOKEN_IDS_CACHE
+
+
+def _max_prompt_len() -> int:
+    return max(64, int(os.environ.get("CYSENT_RL_MAX_PROMPT_LEN", "256")))
+
+
+def _policy_microbatch_size() -> int:
+    """Call torch.cuda.empty_cache() every N backward passes (same episode); does not split optimizer steps."""
+    return max(1, int(os.environ.get("CYSENT_RL_POLICY_MICROBATCH", "8")))
+
+
+def _make_optimizer(params, lr: float, weight_decay: float):
+    try:
+        import bitsandbytes as bnb  # type: ignore
+
+        if torch.cuda.is_available():
+            return bnb.optim.AdamW8bit(params, lr=lr, weight_decay=weight_decay)
+    except Exception:
+        pass
+    return torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
 
 
 def _build_prompt(info: Dict[str, Any]) -> str:
@@ -75,6 +109,25 @@ def _detect_lora_targets(model: torch.nn.Module) -> List[str]:
     return sorted(found) if found else ["q_proj", "v_proj"]
 
 
+def _should_use_qlora() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    override = os.environ.get("CYSENT_RL_QLORA", "").strip().lower()
+    if override in ("0", "false", "no"):
+        return False
+    if override in ("1", "true", "yes"):
+        return True
+    total = torch.cuda.get_device_properties(0).total_memory
+    return total < 22 * 1024**3
+
+
+def _model_input_device(model: torch.nn.Module) -> torch.device:
+    try:
+        return next(model.parameters()).device
+    except StopIteration:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 def load_model(
     model_id: str,
     adapter_path: Optional[str],
@@ -82,26 +135,76 @@ def load_model(
     lora_alpha: int,
     token: Optional[str] = None,
 ):
-    print(f"[LiveRL] Loading base model: {model_id}")
-    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=dtype, trust_remote_code=True, token=token,
-    )
+    global _ACTION_TOKEN_IDS_CACHE
+    _ACTION_TOKEN_IDS_CACHE = None
+
+    use_qlora = _should_use_qlora()
+    print(f"[LiveRL] Loading base model: {model_id} (QLoRA={use_qlora})")
+
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, token=token)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    if adapter_path and Path(adapter_path).exists():
-        print(f"[LiveRL] Loading SFT adapter from: {adapter_path}")
-        try:
-            from peft import PeftModel
-            model = PeftModel.from_pretrained(model, adapter_path)
-            model = model.merge_and_unload()
-            print("[LiveRL] SFT adapter merged into base weights.")
-        except Exception as e:
-            print(f"[LiveRL] Could not merge SFT adapter ({e}), continuing with base model.")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    base = None
 
-    targets = _detect_lora_targets(model)
+    if use_qlora:
+        try:
+            from transformers import BitsAndBytesConfig
+            compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=compute_dtype,
+            )
+            base = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                quantization_config=bnb_config,
+                device_map="auto",
+                trust_remote_code=True,
+                token=token,
+            )
+        except Exception as exc:
+            vram = torch.cuda.get_device_properties(0).total_memory
+            if vram < 22 * 1024**3:
+                raise RuntimeError(
+                    "QLoRA (4-bit) is required on this GPU (~16GB) but failed to load. "
+                    "Install: pip install bitsandbytes  (and restart runtime). "
+                    f"Original error: {exc}"
+                ) from exc
+            print(f"[LiveRL] QLoRA load failed ({exc}), falling back to fp16.")
+            use_qlora = False
+
+    if not use_qlora:
+        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        base = AutoModelForCausalLM.from_pretrained(
+            model_id, dtype=dtype, trust_remote_code=True, token=token,
+        )
+        if adapter_path and Path(adapter_path).exists():
+            print(f"[LiveRL] Loading SFT adapter from: {adapter_path}")
+            try:
+                from peft import PeftModel
+                base = PeftModel.from_pretrained(base, adapter_path)
+                base = base.merge_and_unload()
+                print("[LiveRL] SFT adapter merged into base weights.")
+            except Exception as e:
+                print(f"[LiveRL] Could not merge SFT adapter ({e}), continuing with base model.")
+        base = base.to(device)
+    elif adapter_path and Path(adapter_path).exists():
+        print(
+            "[LiveRL] QLoRA mode: SFT merge skipped (use fp16 path or merge offline). "
+            "Training LoRA on 4-bit base."
+        )
+
+    try:
+        from peft import prepare_model_for_kbit_training
+        if use_qlora:
+            base = prepare_model_for_kbit_training(base)
+    except Exception:
+        pass
+
+    targets = _detect_lora_targets(base)
     print(f"[LiveRL] LoRA targets: {targets}")
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -110,61 +213,100 @@ def load_model(
         lora_dropout=0.05,
         target_modules=targets,
     )
-    model = get_peft_model(model, lora_config)
+    model = get_peft_model(base, lora_config)
     model.print_trainable_parameters()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
     model.train()
+    use_gc = os.environ.get("CYSENT_RL_GRAD_CHECKPOINT", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if use_gc:
+        try:
+            if hasattr(model, "gradient_checkpointing_enable"):
+                model.gradient_checkpointing_enable()
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
+        except Exception as exc:
+            print(f"[LiveRL] Gradient checkpointing skipped: {exc}")
+
+    if use_qlora:
+        device = _model_input_device(model)
     return model, tokenizer, device
 
 
 def collect_trajectory(
-    model, tokenizer, device, env: CySentSecurityEnv, max_turns: int = 150,
-) -> Tuple[List[torch.Tensor], List[float], Dict[str, Any]]:
+    model,
+    tokenizer,
+    device: torch.device,
+    env: CySentSecurityEnv,
+    max_turns: int,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Rollout without autograd — avoids keeping ~100 forward graphs in VRAM."""
+    dev = _model_input_device(model)
+    at_ids = torch.tensor(_action_token_ids(tokenizer), device=dev, dtype=torch.long)
+    transitions: List[Dict[str, Any]] = []
+    stats: Dict[str, Any] = {"actions": [], "parsed_ok": 0, "fallback": 0, "turns": 0}
+
+    was_training = model.training
+    model.eval()
     obs, info = env.reset()
-    log_probs: List[torch.Tensor] = []
-    rewards: List[float] = []
-    stats = {"actions": [], "parsed_ok": 0, "fallback": 0, "turns": 0}
+    mlen = _max_prompt_len()
+    with torch.no_grad():
+        for _ in range(max_turns):
+            prompt = _build_prompt(info)
+            inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=mlen)
+            inputs = {k: v.to(dev) for k, v in inputs.items()}
+            outputs = model(**inputs, use_cache=False)
+            next_logits = outputs.logits[:, -1, :]
+            action_logits = next_logits[0, at_ids]
+            action_dist = torch.distributions.Categorical(logits=action_logits)
+            sampled = action_dist.sample()
+            action_id = int(sampled.item())
 
-    for t in range(max_turns):
-        prompt = _build_prompt(info)
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+            transitions.append({"prompt": prompt, "action_id": action_id})
+            stats["actions"].append(ACTION_LIST[action_id])
+            stats["parsed_ok"] += 1
 
-        outputs = model(**inputs)
-        next_logits = outputs.logits[:, -1, :]
+            obs, reward, terminated, truncated, info = env.step(action_id)
+            transitions[-1]["reward"] = float(reward)
+            stats["turns"] += 1
 
-        action_token_ids = []
-        for name in ACTION_LIST:
-            toks = tokenizer.encode(name, add_special_tokens=False)
-            action_token_ids.append(toks[0] if toks else 0)
+            if terminated or truncated:
+                break
 
-        action_logits = next_logits[0, action_token_ids]
-        action_dist = torch.distributions.Categorical(logits=action_logits)
-        sampled = action_dist.sample()
-        log_prob = action_dist.log_prob(sampled)
+    if was_training:
+        model.train()
+    return transitions, stats
 
-        action_id = int(sampled.item())
-        log_probs.append(log_prob)
-        stats["actions"].append(ACTION_LIST[action_id])
-        stats["parsed_ok"] += 1
 
-        obs, reward, terminated, truncated, info = env.step(action_id)
-        rewards.append(float(reward))
-        stats["turns"] += 1
-
-        if terminated or truncated:
-            break
-
-    return log_probs, rewards, stats
+def forward_log_prob_of_action(
+    model: torch.nn.Module,
+    tokenizer: Any,
+    device: torch.device,
+    prompt: str,
+    action_id: int,
+) -> torch.Tensor:
+    """log π(a|s) for one (prompt, action) — use inside training backward."""
+    dev = _model_input_device(model)
+    at_ids = _action_token_ids(tokenizer)
+    mlen = _max_prompt_len()
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=mlen)
+    inputs = {k: v.to(dev) for k, v in inputs.items()}
+    outputs = model(**inputs, use_cache=False)
+    next_logits = outputs.logits[:, -1, :]
+    idx = torch.tensor(at_ids, device=dev, dtype=torch.long)
+    action_logits = next_logits[0, idx]
+    log_probs = torch.nn.functional.log_softmax(action_logits, dim=-1)
+    return log_probs[action_id]
 
 
 def train(
     model_id: str = "Qwen/Qwen2.5-3B-Instruct",
     adapter_path: Optional[str] = None,
     token: Optional[str] = None,
-    total_steps: int = 500,
+    total_steps: int = 300,
     max_turns: int = 100,
     lr: float = 1e-5,
     gamma: float = 0.99,
@@ -179,7 +321,7 @@ def train(
     torch.manual_seed(seed)
 
     model, tokenizer, device = load_model(model_id, adapter_path, lora_r, lora_alpha, token)
-    optimizer = torch.optim.AdamW(
+    optimizer = _make_optimizer(
         (p for p in model.parameters() if p.requires_grad), lr=lr, weight_decay=0.01,
     )
 
@@ -194,7 +336,10 @@ def train(
     print(f"  CySent Live RL — REINFORCE + Baseline")
     print(f"  Model: {model_id}")
     print(f"  SFT adapter: {adapter_path or 'none'}")
-    print(f"  Steps: {total_steps} | Max turns/ep: {max_turns}")
+    print(
+        f"  Steps: {total_steps} | Max turns/ep: {max_turns} | max_prompt_len={_max_prompt_len()} "
+        f"| policy_microbatch={_policy_microbatch_size()}"
+    )
     print(f"  LR: {lr} | Gamma: {gamma} | LoRA r={lora_r}")
     print(f"{'='*60}\n")
 
@@ -205,12 +350,13 @@ def train(
         env_seed = seed + step
         env = CySentSecurityEnv(max_steps=max_turns, seed=env_seed)
 
-        log_probs, rewards, stats = collect_trajectory(model, tokenizer, device, env, max_turns)
+        transitions, stats = collect_trajectory(model, tokenizer, device, env, max_turns)
 
-        if not log_probs:
+        if not transitions:
             step += 1
             continue
 
+        rewards = [tr["reward"] for tr in transitions]
         ep_reward = sum(rewards)
         baseline = baseline_beta * baseline + (1 - baseline_beta) * ep_reward
 
@@ -227,22 +373,33 @@ def train(
         if std > 1e-8:
             advantages = advantages / std
 
-        policy_loss = torch.tensor(0.0, device=device, requires_grad=True)
-        for lp, adv in zip(log_probs, advantages):
-            policy_loss = policy_loss + (-lp * adv.detach())
-        policy_loss = policy_loss / len(log_probs)
-
+        n_t = len(transitions)
+        policy_loss_val = 0.0
+        mb = _policy_microbatch_size()
         optimizer.zero_grad()
-        policy_loss.backward()
+        for i, (tr, adv) in enumerate(zip(transitions, advantages)):
+            lp = forward_log_prob_of_action(
+                model, tokenizer, device, tr["prompt"], int(tr["action_id"]),
+            )
+            contrib = (-lp * adv) / n_t
+            policy_loss_val += float(contrib.detach().item())
+            contrib.backward()
+            if mb > 1 and (i + 1) % mb == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
+
+        del transitions, advantages, returns_t
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         step += 1
         elapsed = time.time() - t0
 
         record = {
             "step": step, "reward": round(ep_reward, 3),
-            "baseline": round(baseline, 3), "loss": round(policy_loss.item(), 4),
+            "baseline": round(baseline, 3), "loss": round(policy_loss_val, 4),
             "turns": stats["turns"], "elapsed": round(elapsed, 1),
         }
         history.append(record)
@@ -250,7 +407,7 @@ def train(
         if step % 10 == 0 or step == 1:
             print(
                 f"[Step {step:>4}/{total_steps}]  reward={ep_reward:>8.2f}  "
-                f"baseline={baseline:>8.2f}  loss={policy_loss.item():>7.4f}  "
+                f"baseline={baseline:>8.2f}  loss={policy_loss_val:>7.4f}  "
                 f"turns={stats['turns']:>3}  elapsed={elapsed:.0f}s"
             )
 
@@ -284,7 +441,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-id", default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--adapter-path", default="", help="Path to SFT adapter (warm start)")
     parser.add_argument("--token", default="", help="HF token for gated models")
-    parser.add_argument("--steps", type=int, default=500)
+    parser.add_argument("--steps", type=int, default=300)
     parser.add_argument("--max-turns", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--gamma", type=float, default=0.99)

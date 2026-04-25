@@ -1,7 +1,7 @@
 export type PostureLevel = "healthy" | "guarded" | "elevated" | "critical";
 
 export type StrategyMode = "conservative" | "balanced" | "aggressive";
-export type ActionSource = "ppo_agent" | "hf_llm_agent" | "heuristic_ai" | "human_manual";
+export type ActionSource = "ppo_agent" | "hf_llm_agent" | "hybrid" | "random";
 
 export type AssetState = {
   name: string;
