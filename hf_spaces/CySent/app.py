@@ -18,7 +18,7 @@ except ImportError:
 
 
 MODEL_ID = os.getenv("HF_MODEL_ID", "Qwen/Qwen2.5-3B-Instruct")
-ADAPTER_PATH = os.getenv("HF_ADAPTER_PATH", "")
+ADAPTER_PATH = os.getenv("HF_ADAPTER_PATH", "sxchin01/CySent-adapter")
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 model = None
