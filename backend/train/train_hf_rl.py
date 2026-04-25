@@ -16,11 +16,36 @@ import numpy as np
 import torch
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.cache_utils import DynamicCache
 
 from backend.env.security_env import ACTION_NAMES, CySentSecurityEnv
 
 VALID_ACTIONS = {name: idx for idx, name in ACTION_NAMES.items()}
 ACTION_LIST = ", ".join(VALID_ACTIONS.keys())
+
+
+def _ensure_dynamic_cache_compat() -> None:
+    """Backfill DynamicCache.from_legacy_cache for older transformers builds."""
+    if hasattr(DynamicCache, "from_legacy_cache"):
+        return
+
+    @classmethod
+    def _from_legacy_cache(cls, past_key_values: Any) -> Any:
+        cache = cls()
+        if past_key_values is None:
+            return cache
+        try:
+            for layer_idx, layer_past in enumerate(past_key_values):
+                if not isinstance(layer_past, (tuple, list)) or len(layer_past) < 2:
+                    continue
+                key_states, value_states = layer_past[0], layer_past[1]
+                cache.update(key_states, value_states, layer_idx)
+        except Exception:
+            # Fallback to empty cache; generation will continue without legacy state.
+            return cls()
+        return cache
+
+    setattr(DynamicCache, "from_legacy_cache", _from_legacy_cache)
 
 
 def _build_prompt(info: Dict[str, Any], scenario: str, attacker: str) -> str:
@@ -177,6 +202,7 @@ def train_hf_rl(
     early_stop_reward: float = 3.0,
     save_every: int = 5,
 ) -> Dict[str, Any]:
+    _ensure_dynamic_cache_compat()
     scenarios = scenarios or ["bank", "saas"]
     attackers = attackers or ["ransomware_gang", "credential_thief"]
     rng = np.random.default_rng(seed)
@@ -187,12 +213,11 @@ def train_hf_rl(
     print(f"[train_hf_rl] Episodes: {episodes}, max_steps: {max_steps}")
 
     dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
     base_model = AutoModelForCausalLM.from_pretrained(
         model_id,
         torch_dtype=dtype,
         device_map="auto",
-        trust_remote_code=True,
     )
 
     if tokenizer.pad_token is None:
@@ -317,9 +342,9 @@ def _load_hf_adapter(
     dtype: torch.dtype,
 ) -> Tuple[Any, Any]:
     from peft import PeftModel
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
     base = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=dtype, device_map="auto", trust_remote_code=True,
+        model_id, torch_dtype=dtype, device_map="auto",
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
