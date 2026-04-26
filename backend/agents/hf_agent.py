@@ -21,6 +21,11 @@ except ImportError:
     HfApi = None
 
 try:
+    from huggingface_hub import HfFolder
+except ImportError:
+    HfFolder = None
+
+try:
     import torch
 except ImportError:  # pragma: no cover - optional when using remote-only HF
     torch = None
@@ -105,6 +110,14 @@ def _mask_token(token: Optional[str]) -> str:
     return f"{token[:4]}...{token[-4:]}"
 
 
+def _clean_env_value(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = str(value).strip().strip('"').strip("'").strip()
+    cleaned = cleaned.replace("\r", "").replace("\n", "").strip()
+    return cleaned or None
+
+
 class HFAgent:
     """HuggingFace LLM agent for action decision making."""
 
@@ -115,10 +128,10 @@ class HFAgent:
         endpoint_url: Optional[str] = None,
         token: Optional[str] = None,
         timeout: Optional[float] = None,
-        max_retries: int = 3,
+        max_retries: int = 2,
     ) -> None:
         self.model_id = model_id or os.getenv("HF_MODEL_ID", "Qwen/Qwen2.5-3B-Instruct")
-        self.merged_model_id = (os.getenv("HF_MERGED_MODEL_ID") or "").strip() or None
+        self.merged_model_id = _clean_env_value(os.getenv("HF_MERGED_MODEL_ID"))
         env_adapter_path = os.getenv("HF_ADAPTER_PATH")
         resolved_adapter_path = adapter_path
         if resolved_adapter_path is None:
@@ -127,11 +140,9 @@ class HFAgent:
             else:
                 resolved_adapter_path = "sxchin01/CySent-Qwen-RL"
         self.adapter_path = str(resolved_adapter_path).strip()
-        self.endpoint_url = (endpoint_url or os.getenv("HF_ENDPOINT_URL") or "").strip() or None
-        resolved_token = token
-        if resolved_token is None:
-            resolved_token = os.getenv("HF_TOKEN") or ""
-        self.token = str(resolved_token).strip() or None
+        self.endpoint_url = _clean_env_value(endpoint_url) or _clean_env_value(os.getenv("HF_ENDPOINT_URL"))
+        self.token_source = "HF_TOKEN"
+        self.token = self._resolve_canonical_token(token)
         if timeout is None:
             timeout = float(os.getenv("HF_TIMEOUT", "10.0"))
         self.timeout = float(timeout)
@@ -145,10 +156,90 @@ class HFAgent:
         self._active_backend = "none"
         self._local_load_attempted = False
         self._tried_anonymous_cloud = False
+        self._tried_default_provider = False
         self._token_validity_checked = False
         self._token_is_valid = False
-        print(f"[HFAgent] HF_TOKEN detected={bool(self.token)} token={_mask_token(self.token)} source=HF_TOKEN")
+        print(
+            f"[HFAgent] HF token detected={bool(self.token)} "
+            f"token={_mask_token(self.token)} source={self.token_source}"
+        )
+        self._validate_token_once_at_startup()
         self._initialize_client()
+
+    def _resolve_canonical_token(self, explicit_token: Optional[str]) -> Optional[str]:
+        if explicit_token is not None:
+            cleaned = _clean_env_value(explicit_token)
+            self.token_source = "constructor_arg"
+            return cleaned
+
+        canonical = _clean_env_value(os.getenv("HF_TOKEN"))
+        alt_hf = _clean_env_value(os.getenv("HUGGINGFACE_TOKEN"))
+        alt_hub = _clean_env_value(os.getenv("HUGGINGFACEHUB_API_TOKEN"))
+        cached = None
+        if HfFolder is not None:
+            try:
+                cached = _clean_env_value(HfFolder.get_token())
+            except Exception:
+                cached = None
+
+        alt_sources: List[str] = []
+        if alt_hf:
+            alt_sources.append("HUGGINGFACE_TOKEN")
+        if alt_hub:
+            alt_sources.append("HUGGINGFACEHUB_API_TOKEN")
+        if cached:
+            alt_sources.append("hf_cache_login")
+
+        if canonical:
+            self.token_source = "HF_TOKEN"
+            if alt_sources:
+                print(
+                    "[HFAgent] Ignoring non-canonical HF token sources: "
+                    + ", ".join(alt_sources)
+                    + ". Use HF_TOKEN only."
+                )
+            return canonical
+
+        if alt_sources:
+            raise RuntimeError(
+                "HF token configured via non-canonical source ("
+                + ", ".join(alt_sources)
+                + "). Set HF_TOKEN only and remove other HF token env vars to avoid auth confusion."
+            )
+
+        self.token_source = "missing"
+        return None
+
+    def _validate_token_once_at_startup(self) -> None:
+        """Validate HF token with whoami once at startup using a bounded timeout."""
+        if not self.token:
+            return
+        if HfApi is None:
+            return
+
+        def _whoami() -> Dict[str, Any]:
+            return HfApi(token=self.token).whoami()
+
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_whoami)
+                _ = future.result(timeout=5.0)
+            self._token_validity_checked = True
+            self._token_is_valid = True
+            print("[HFAgent] HF token validation: whoami ok")
+        except FuturesTimeoutError as exc:
+            self._token_validity_checked = True
+            self._token_is_valid = False
+            raise RuntimeError(
+                "HF token validation timed out during startup. Check network connectivity and HF API reachability."
+            ) from exc
+        except Exception as exc:
+            self._token_validity_checked = True
+            self._token_is_valid = False
+            raise RuntimeError(
+                "HF token validation failed at startup (whoami). "
+                "Set a valid HF_TOKEN in .env and remove conflicting HF token env vars."
+            ) from exc
 
     def _has_valid_token_for_cloud(self) -> bool:
         if not self.token:
@@ -186,6 +277,16 @@ class HFAgent:
 
     def _initialize_client(self) -> None:
         """Initialize with precedence: hosted (if configured) -> local adapter -> unavailable."""
+        hosted_configured = bool(str(self.endpoint_url or "").strip())
+        if hosted_configured:
+            if InferenceClient is None:
+                raise ImportError("huggingface_hub not installed. Cannot use hosted HF agent.")
+            self.client = InferenceClient(model=self.endpoint_url, token=self.token)
+            self._using_local_model = False
+            self._active_backend = "cloud"
+            print(f"[HFAgent] Ready (cloud endpoint). target={self.endpoint_url}")
+            return
+
         if self.merged_model_id:
             if InferenceClient is None:
                 raise ImportError("huggingface_hub not installed. Cannot use hosted HF agent.")
@@ -197,7 +298,6 @@ class HFAgent:
             print(f"[HFAgent] Ready (cloud merged). target={self.merged_model_id}")
             return
 
-        hosted_configured = bool(str(self.endpoint_url or "").strip())
         hosted_model_configured = bool(str(self.token or "").strip()) and not bool(self.adapter_path)
 
         if hosted_configured or hosted_model_configured:
@@ -367,18 +467,33 @@ Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
 
         for attempt in range(self.max_retries):
             try:
-                response = self.client.text_generation(
-                    prompt,
-                    model=self._cloud_model_target if self._using_local_model is False else None,
-                    adapter_id=self._cloud_adapter_id,
-                    max_new_tokens=16,
-                    temperature=0.0,
-                    do_sample=False,
-                )
+                request_kwargs: Dict[str, Any] = {
+                    "max_new_tokens": 16,
+                }
+                if self._cloud_adapter_id:
+                    request_kwargs["adapter_id"] = self._cloud_adapter_id
+
+                response = self.client.text_generation(prompt, **request_kwargs)
 
                 return str(response).strip()
             except Exception as e:
                 msg = str(e)
+                # Some repos are not available through forced hf-inference provider.
+                # Retry once with the default provider selection used by InferenceClient.
+                if (
+                    not self._tried_default_provider
+                    and "Model not supported by provider hf-inference" in msg
+                    and InferenceClient is not None
+                ):
+                    self._tried_default_provider = True
+                    kwargs: Dict[str, Any] = {"model": self._cloud_model_target}
+                    if self.token:
+                        kwargs["token"] = self.token
+                    self.client = InferenceClient(**kwargs)
+                    self._active_backend = "cloud"
+                    print("[HFAgent] Falling back to default provider selection for hosted inference.")
+                    continue
+
                 # Some environments provide an invalid/expired HF token while using a public model.
                 # Retry once anonymously for hosted-model mode before failing.
                 if (
@@ -399,7 +514,13 @@ Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
                 if "401" in msg or "Unauthorized" in msg or "Invalid username or password" in msg:
                     raise RuntimeError(
                         "HF authentication failed (401 Unauthorized). "
-                        "Set a valid HF token via HF_TOKEN (or HUGGINGFACEHUB_API_TOKEN)."
+                        "Set a valid HF_TOKEN in .env and remove conflicting HF token env vars."
+                    ) from e
+
+                if "Model not supported by provider" in msg:
+                    raise RuntimeError(
+                        "HF model is not supported by the current provider path. "
+                        "Configure HF_ENDPOINT_URL to a dedicated Inference Endpoint for production use."
                     ) from e
 
                 if attempt == self.max_retries - 1:

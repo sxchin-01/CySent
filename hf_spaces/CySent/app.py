@@ -358,6 +358,7 @@ with gr.Blocks(css=CSS, title="CySent — Cyber Defense AI") as demo:
     gr.HTML("""
     <div class="footer">
         <a href="https://github.com/sxchin-01/CySent" target="_blank">GitHub</a>
+        <a href="https://huggingface.co/spaces/sxchin01/CySent/blob/main/BLOG.md" target="_blank">Blog</a>
         <a href="https://huggingface.co/sxchin01/CySent-adapter" target="_blank">Model</a>
         <a href="https://huggingface.co/spaces/sxchin01/CySent" target="_blank">Space</a>
         <a href="https://github.com/sxchin-01/CySent/blob/main/notebooks/CySent_Unsloth_Train.ipynb" target="_blank">Colab</a>

@@ -1,0 +1,248 @@
+CySent: Training AI Defenders for Cybersecurity Battles Humans Can’t Scale
+
+Cybersecurity teams are under pressure.
+
+Modern defenders face an impossible equation: more alerts, expanding attack surfaces, increasingly capable adversaries, and too few analysts to respond fast enough. A single phishing email can escalate into credential theft, lateral movement, database compromise, and ransomware in minutes.
+
+Most organizations are still solving this with dashboards, triage tools, and more manual effort.
+
+But what if defenders could train autonomous blue-team agents in simulation the same way self-driving systems train before touching real roads?
+
+That question led to CySent.
+
+What CySent Is Today
+
+CySent is an autonomous cyber defense platform where AI agents learn to defend a simulated enterprise network against evolving attacks.
+
+Instead of building another chatbot or static detector, CySent tackles a harder and more useful challenge:
+
+Can an AI make sequential defense decisions under pressure, in a live environment, with measurable outcomes?
+
+Today, CySent includes:
+
+a real-time frontend dashboard
+a Python backend simulation engine
+reinforcement learning agents
+Hugging Face language-model defenders
+benchmarking infrastructure
+live training workflows
+deployable model hosting via Hugging Face
+
+This has evolved from a prototype into a full-stack AI security system.
+
+Why Cyber Defense Needs a Different Kind of AI
+
+Most security AI tools still focus on one-step tasks:
+
+classify suspicious emails
+summarize alerts
+help search logs
+cluster incidents
+
+Useful—but incomplete.
+
+Real incidents require chains of decisions:
+
+isolate a host or observe longer?
+rotate credentials now or preserve uptime?
+patch exposed systems first or restore backups?
+segment the network or continue investigation?
+contain ransomware spread or protect crown-jewel assets?
+
+Cybersecurity is not just detection.
+
+It is decision-making under uncertainty.
+
+CySent was built around that reality.
+
+The CySent Environment
+
+CySent simulates an enterprise network containing assets such as:
+
+employee email systems
+HR systems
+web servers
+finance databases
+identity systems
+backup infrastructure
+SOC monitoring nodes
+
+Attackers run campaigns including:
+
+phishing
+password spraying
+credential theft
+privilege escalation
+lateral movement
+ransomware deployment
+
+Every turn changes the state of the network.
+
+Risk rises or falls. Services degrade or recover. Critical systems become exposed or secured.
+
+This creates something many AI projects never reach:
+
+Consequences over time.
+
+The Defenders Inside CySent
+1. PPO Reinforcement Learning Agent
+
+CySent trains a PPO (Proximal Policy Optimization) defender directly against the live environment.
+
+The agent learns through rewards tied to:
+
+uptime preservation
+risk reduction
+breach prevention
+fast recovery
+
+This provides a strong control-policy baseline.
+
+2. Hugging Face LLM Defender (Qwen)
+
+CySent also includes a Hugging Face LLM defender based on:
+
+Qwen/Qwen2.5-3B-Instruct
+
+The model was first fine-tuned on defense trajectories, then further developed into a deployable merged model:
+
+sxchin01/CySent-Qwen-RL-merged
+
+This enables the frontend hf_llm_agent path to call a trained cyber-defense language model rather than a generic assistant.
+
+The model outputs real environment actions such as:
+
+isolate_suspicious_host
+rotate_credentials
+patch_auth_server
+investigate_top_alert
+3. Random Baseline
+
+A random defender remains intentionally weak—but extremely important.
+
+Without honest baselines, “AI improvement” claims are meaningless.
+
+CySent benchmarks trained agents against randomness.
+
+Why CySent Is Different Now
+Full-Stack AI System
+
+CySent now includes:
+
+Frontend: interactive dashboard with node graph + controls
+Backend: FastAPI simulation engine
+Agents: PPO + HF LLM + random baselines
+Model Hosting: Hugging Face model repo + Space deployment
+Source Control: GitHub project repo
+Live Model Deployment
+
+A major milestone was converting the trained Qwen adapter into a merged deployable model with full inference artifacts:
+
+config.json
+tokenizer.json
+sharded safetensors
+generation config
+
+That makes the model hostable and production-compatible.
+
+End-to-End Agent Switching
+
+Users can select agents in the frontend and route decisions through:
+
+PPO agent
+HF LLM agent
+Random agent
+
+This enables side-by-side evaluation inside the same world.
+
+Why Use Both RL and LLMs?
+
+Reinforcement learning and language models solve different parts of autonomy.
+
+RL excels at:
+optimizing long-term reward
+repeated control scenarios
+stable policies
+LLMs excel at:
+structured reasoning
+adapting to unseen conditions
+leveraging broad pretraining priors
+
+CySent explores the idea that future cyber defense may be:
+
+Hybrid systems, not single models.
+
+What Was Learned Building It
+Benchmarks Matter
+
+Fancy demos mean nothing without baselines.
+
+Infrastructure Matters
+
+Training a model is only half the work.
+
+Serving it, routing it, benchmarking it, and integrating it into a product is where real projects succeed or fail.
+
+Cybersecurity Is Sequential
+
+Breaches often happen because several decisions were delayed—not because one prediction was wrong.
+
+Transparency Matters
+
+Users trust systems they can inspect.
+
+That’s why CySent includes a visual dashboard rather than hiding autonomy behind an API.
+
+Current Deployment Stack
+GitHub
+
+Primary source repository and version control.
+
+Hugging Face Space
+
+Interactive hosted project interface.
+
+Hugging Face Model Repo
+
+Deployable trained model:
+
+sxchin01/CySent-Qwen-RL-merged
+Where CySent Can Go Next
+
+Future directions include:
+
+multi-agent attacker vs defender self-play
+analyst-in-the-loop workflows
+SIEM integrations
+enterprise policy constraints
+memory-enabled defenders
+autonomous incident response drills
+curriculum learning with escalating threats
+benchmark leaderboards
+Why This Project Matters
+
+The cybersecurity industry is moving toward automation.
+
+But automation without rigorous testing is dangerous.
+
+CySent offers a safer path:
+
+simulate first
+benchmark honestly
+train repeatedly
+inspect behavior
+deploy cautiously
+
+That’s how autonomy matured in robotics and self-driving systems.
+
+Cybersecurity deserves the same rigor.
+
+Final Thought
+
+The future defender may not be a chatbot.
+
+It may be a continuously trained system that watches the network, reasons over tradeoffs, reacts in seconds, and learns from thousands of simulated battles before touching production systems.
+
+CySent is a step toward that future.
+
+And just as importantly—it is a place to test whether that future should exist at all.

@@ -13,6 +13,10 @@ pinned: false
 
 **Live cyber defense decision-making powered by PPO and fine-tuned LLMs.**
 
+## Blog
+
+- Read the full project article: [BLOG.md](./BLOG.md)
+
 ## What Is CySent?
 
 CySent is a cybersecurity simulation and decision platform where autonomous defense agents reason about attack-defense dynamics and recommend immediate actions.
@@ -46,6 +50,7 @@ Set these in **Space Secrets** (Settings > Repo Secrets):
 | Resource | URL |
 |----------|-----|
 | GitHub (full project) | [sxchin-01/CySent](https://github.com/sxchin-01/CySent) |
+| Project Blog | [BLOG.md](./BLOG.md) |
 | Adapter (Qwen LoRA) | [sxchin01/CySent-adapter](https://huggingface.co/sxchin01/CySent-adapter) |
 | Colab: Qwen SFT | [CySent_Unsloth_Train.ipynb](https://github.com/sxchin-01/CySent/blob/main/notebooks/CySent_Unsloth_Train.ipynb) |
 | Colab: Qwen Live RL | [CySent_Qwen_LiveRL.ipynb](https://github.com/sxchin-01/CySent/blob/main/notebooks/CySent_Qwen_LiveRL.ipynb) |

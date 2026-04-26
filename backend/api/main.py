@@ -201,7 +201,17 @@ def reset(req: ResetRequest, request: Request) -> Dict[str, Any]:
     rt = _get_runtime(request)
     with rt.state_lock:
         if req.action_source in VALID_AGENT_NAMES:
-            rt.agent_router.switch_agent(req.action_source)
+            switched = rt.agent_router.switch_agent(req.action_source)
+            if not switched:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": "agent_unavailable",
+                        "message": f"Requested agent '{req.action_source}' is unavailable.",
+                        "agent": req.action_source,
+                        "hint": "Check HF token/endpoint/model settings for hf_llm_agent.",
+                    },
+                )
 
         _, info = rt.env.reset(
             seed=req.seed,
@@ -243,9 +253,37 @@ def step(request: Request) -> Dict[str, Any]:
         try:
             action = rt.agent_router.predict_action(obs, state)
         except Exception as exc:
+            msg = str(exc)
+            status_code = 502
+            error_code = "agent_prediction_failed"
+            hint = "Check agent runtime logs for details."
+
+            if "timed out" in msg.lower():
+                status_code = 504
+                error_code = "hf_timeout"
+                hint = "Increase HF_TIMEOUT or verify HF endpoint responsiveness."
+            elif "401" in msg or "Unauthorized" in msg:
+                status_code = 401
+                error_code = "hf_auth_failed"
+                hint = "Set a valid HF_TOKEN in .env and remove conflicting HF token env vars."
+            elif "404" in msg or "Not Found" in msg:
+                status_code = 502
+                error_code = "hf_endpoint_not_found"
+                hint = "HF_ENDPOINT_URL is unreachable or invalid. Verify the endpoint URL and deployment status."
+            elif "Model not supported by the current provider" in msg:
+                status_code = 502
+                error_code = "hf_provider_unsupported"
+                hint = "Set HF_ENDPOINT_URL to a dedicated HF Inference Endpoint."
+
             raise HTTPException(
-                status_code=502,
-                detail=f"Agent prediction failed ({type(exc).__name__}): {exc}",
+                status_code=status_code,
+                detail={
+                    "code": error_code,
+                    "message": f"Agent prediction failed ({type(exc).__name__}).",
+                    "agent": "hf_llm_agent" if rt.agent_router.default_agent == "hf_llm_agent" else rt.agent_router.last_used_agent,
+                    "error": msg,
+                    "hint": hint,
+                },
             ) from exc
 
         _, reward, terminated, truncated, info = rt.env.step(action)
