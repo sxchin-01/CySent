@@ -100,7 +100,16 @@ export function NetworkGraph({ assets, redTarget, underAttack = false }: Props) 
         boxSelectionEnabled={false}
         minZoom={0.45}
         maxZoom={2.2}
-        layout={{ name: "cose", animate: false, nodeRepulsion: 7000, idealEdgeLength: 130 }}
+        layout={{
+          name: "cose",
+          animate: false,
+          fit: true,
+          padding: 56,
+          nodeRepulsion: 12000,
+          idealEdgeLength: 220,
+          edgeElasticity: 90,
+          gravity: 0.4,
+        }}
         stylesheet={[
           {
             selector: "node",

@@ -16,6 +16,11 @@ except ImportError:
     InferenceClient = None
 
 try:
+    from huggingface_hub import HfApi
+except ImportError:
+    HfApi = None
+
+try:
     import torch
 except ImportError:  # pragma: no cover - optional when using remote-only HF
     torch = None
@@ -62,6 +67,10 @@ def _looks_like_local_path(value: str) -> bool:
     if not text:
         return False
 
+    # Existing filesystem paths (absolute or relative) should always be treated as local.
+    if Path(text).exists():
+        return True
+
     # Windows absolute paths (C:\...) or UNC paths.
     if ":" in text or text.startswith("\\\\"):
         return True
@@ -87,6 +96,15 @@ def _read_adapter_base_model_name(adapter_path: str) -> Optional[str]:
         return None
 
 
+def _mask_token(token: Optional[str]) -> str:
+    if not token:
+        return "<missing>"
+    token = str(token).strip()
+    if len(token) <= 8:
+        return "*" * len(token)
+    return f"{token[:4]}...{token[-4:]}"
+
+
 class HFAgent:
     """HuggingFace LLM agent for action decision making."""
 
@@ -100,23 +118,85 @@ class HFAgent:
         max_retries: int = 3,
     ) -> None:
         self.model_id = model_id or os.getenv("HF_MODEL_ID", "Qwen/Qwen2.5-3B-Instruct")
-        self.adapter_path = adapter_path or os.getenv("HF_ADAPTER_PATH", "").strip()
+        self.merged_model_id = (os.getenv("HF_MERGED_MODEL_ID") or "").strip() or None
+        env_adapter_path = os.getenv("HF_ADAPTER_PATH")
+        resolved_adapter_path = adapter_path
+        if resolved_adapter_path is None:
+            if env_adapter_path is not None and env_adapter_path.strip():
+                resolved_adapter_path = env_adapter_path
+            else:
+                resolved_adapter_path = "sxchin01/CySent-Qwen-RL"
+        self.adapter_path = str(resolved_adapter_path).strip()
         self.endpoint_url = (endpoint_url or os.getenv("HF_ENDPOINT_URL") or "").strip() or None
-        self.token = (token or os.getenv("HF_TOKEN") or "").strip() or None
+        resolved_token = token
+        if resolved_token is None:
+            resolved_token = os.getenv("HF_TOKEN") or ""
+        self.token = str(resolved_token).strip() or None
         if timeout is None:
             timeout = float(os.getenv("HF_TIMEOUT", "10.0"))
         self.timeout = float(timeout)
         self.max_retries = max_retries
-        self.client: Optional[InferenceClient] = None
+        self.client: Optional[Any] = None
         self.model = None
         self.tokenizer = None
+        self._cloud_model_target = self.merged_model_id or self.model_id
+        self._cloud_adapter_id: Optional[str] = None
         self._using_local_model = False
         self._active_backend = "none"
         self._local_load_attempted = False
+        self._tried_anonymous_cloud = False
+        self._token_validity_checked = False
+        self._token_is_valid = False
+        print(f"[HFAgent] HF_TOKEN detected={bool(self.token)} token={_mask_token(self.token)} source=HF_TOKEN")
         self._initialize_client()
+
+    def _has_valid_token_for_cloud(self) -> bool:
+        if not self.token:
+            return False
+        if self._token_validity_checked:
+            return self._token_is_valid
+        self._token_validity_checked = True
+        if HfApi is None:
+            # If HfApi is unavailable, assume configured token is intended for cloud use.
+            self._token_is_valid = True
+            return self._token_is_valid
+        try:
+            HfApi(token=self.token).whoami()
+            self._token_is_valid = True
+        except Exception:
+            self._token_is_valid = False
+        return self._token_is_valid
+
+    def _create_hosted_model_client(self, token: Optional[str], model_target: Optional[str] = None) -> Any:
+        """Create hosted model client with explicit provider when supported by huggingface_hub."""
+        if InferenceClient is None:
+            raise ImportError("huggingface_hub not installed. Cannot use hosted HF agent.")
+
+        target = (model_target or self._cloud_model_target or self.model_id).strip()
+        kwargs: Dict[str, Any] = {}
+        if token:
+            kwargs["token"] = token
+            kwargs["headers"] = {"Authorization": f"Bearer {token}"}
+
+        try:
+            return InferenceClient(model=target, provider="hf-inference", **kwargs)
+        except TypeError:
+            # Older huggingface_hub versions may not support the provider argument.
+            return InferenceClient(model=target, **kwargs)
 
     def _initialize_client(self) -> None:
         """Initialize with precedence: hosted (if configured) -> local adapter -> unavailable."""
+        if self.merged_model_id:
+            if InferenceClient is None:
+                raise ImportError("huggingface_hub not installed. Cannot use hosted HF agent.")
+            self._cloud_model_target = self.merged_model_id
+            self._cloud_adapter_id = None
+            self.client = self._create_hosted_model_client(self.token, model_target=self.merged_model_id)
+            self._using_local_model = False
+            self._active_backend = "cloud"
+            print(f"[HFAgent] Ready (cloud merged). target={self.merged_model_id}")
+            return
+
         hosted_configured = bool(str(self.endpoint_url or "").strip())
         hosted_model_configured = bool(str(self.token or "").strip()) and not bool(self.adapter_path)
 
@@ -124,15 +204,30 @@ class HFAgent:
             if InferenceClient is None:
                 raise ImportError("huggingface_hub not installed. Cannot use hosted HF agent.")
             target = self.endpoint_url if hosted_configured else self.model_id
-            self.client = InferenceClient(model=target, token=self.token)
+            if hosted_configured:
+                self.client = InferenceClient(model=target, token=self.token)
+            else:
+                self.client = self._create_hosted_model_client(self.token)
             self._using_local_model = False
             self._active_backend = "cloud"
             print(f"[HFAgent] Ready (cloud). target={target}")
             return
 
-        if self.adapter_path and self.token and os.name == "nt" and InferenceClient is not None:
+        if self.adapter_path and not _looks_like_local_path(self.adapter_path):
+            if InferenceClient is None:
+                raise ImportError("huggingface_hub not installed. Cannot use hosted HF agent.")
+            self._cloud_model_target = self.model_id
+            self._cloud_adapter_id = self.adapter_path
+            self.client = self._create_hosted_model_client(self.token, model_target=self.model_id)
+            self._using_local_model = False
+            self._active_backend = "cloud"
+            print(f"[HFAgent] Ready (cloud base+adapter). target={self.model_id} adapter={self.adapter_path}")
+            return
+
+        if self.adapter_path and _looks_like_local_path(self.adapter_path) and self.token and os.name == "nt" and InferenceClient is not None:
             # Local Qwen adapter loads can exceed Windows memory/paging limits; prefer hosted inference.
-            self.client = InferenceClient(model=self.model_id, token=self.token)
+            self._cloud_adapter_id = self.adapter_path if not _looks_like_local_path(self.adapter_path) else None
+            self.client = self._create_hosted_model_client(self.token)
             self._using_local_model = False
             self._active_backend = "cloud"
             print("[HFAgent] Using cloud inference on Windows to avoid local adapter memory pressure.")
@@ -274,6 +369,8 @@ Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
             try:
                 response = self.client.text_generation(
                     prompt,
+                    model=self._cloud_model_target if self._using_local_model is False else None,
+                    adapter_id=self._cloud_adapter_id,
                     max_new_tokens=16,
                     temperature=0.0,
                     do_sample=False,
@@ -281,6 +378,30 @@ Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
 
                 return str(response).strip()
             except Exception as e:
+                msg = str(e)
+                # Some environments provide an invalid/expired HF token while using a public model.
+                # Retry once anonymously for hosted-model mode before failing.
+                if (
+                    not self._tried_anonymous_cloud
+                    and self.token
+                    and self.endpoint_url is None
+                    and InferenceClient is not None
+                ):
+                    self._tried_anonymous_cloud = True
+                    try:
+                        self.client = self._create_hosted_model_client(token=None)
+                        self._active_backend = "cloud"
+                        print("[HFAgent] Cloud call failed with token; retrying anonymously for public model access.")
+                        continue
+                    except Exception:
+                        pass
+
+                if "401" in msg or "Unauthorized" in msg or "Invalid username or password" in msg:
+                    raise RuntimeError(
+                        "HF authentication failed (401 Unauthorized). "
+                        "Set a valid HF token via HF_TOKEN (or HUGGINGFACEHUB_API_TOKEN)."
+                    ) from e
+
                 if attempt == self.max_retries - 1:
                     raise RuntimeError(f"HF API call failed after {self.max_retries} attempts: {e}")
                 time.sleep(1)
@@ -328,13 +449,18 @@ Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
                 self._active_backend = "local"
                 print(f"[HFAgent] Ready (local adapter). adapter={self.adapter_path}")
             except Exception as exc:
-                if self.token and InferenceClient is not None:
+                if self._has_valid_token_for_cloud() and InferenceClient is not None:
                     # If local loading fails (e.g., memory pressure), fall back to hosted inference.
-                    self.client = InferenceClient(model=self.model_id, token=self.token)
+                    self.client = self._create_hosted_model_client(self.token)
                     self._using_local_model = False
                     self._active_backend = "cloud"
                     print(f"[HFAgent] Local adapter load failed ({type(exc).__name__}: {exc}); using cloud fallback.")
                 else:
+                    if self.token and not self._has_valid_token_for_cloud():
+                        raise RuntimeError(
+                            "Local adapter load failed and HF cloud fallback is unavailable: HF token is invalid. "
+                            "Set a valid HF token via HF_TOKEN (or HUGGINGFACEHUB_API_TOKEN)."
+                        ) from exc
                     raise
 
         prompt = self._build_prompt(state)

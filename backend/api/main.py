@@ -36,7 +36,15 @@ def _load_local_env_file(path: str = ".env") -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and os.getenv(key) is None:
+        if not key:
+            continue
+
+        # HF auth/config should come from .env so stale shell values do not win.
+        if key.startswith("HF_") or key.startswith("HUGGINGFACE"):
+            os.environ[key] = value
+            continue
+
+        if os.getenv(key) is None:
             os.environ[key] = value
 
 
@@ -232,7 +240,13 @@ def step(request: Request) -> Dict[str, Any]:
         obs = rt.env._get_observation()
         state = rt.snapshot_state()
 
-        action = rt.agent_router.predict_action(obs, state)
+        try:
+            action = rt.agent_router.predict_action(obs, state)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Agent prediction failed ({type(exc).__name__}): {exc}",
+            ) from exc
 
         _, reward, terminated, truncated, info = rt.env.step(action)
         info["action_name"] = ACTION_NAMES[action]

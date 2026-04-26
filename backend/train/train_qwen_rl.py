@@ -306,7 +306,7 @@ def train(
     model_id: str = "Qwen/Qwen2.5-3B-Instruct",
     adapter_path: Optional[str] = None,
     token: Optional[str] = None,
-    total_steps: int = 300,
+    total_steps: int = 100,
     max_turns: int = 100,
     lr: float = 1e-5,
     gamma: float = 0.99,
@@ -441,7 +441,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-id", default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--adapter-path", default="", help="Path to SFT adapter (warm start)")
     parser.add_argument("--token", default="", help="HF token for gated models")
-    parser.add_argument("--steps", type=int, default=300)
+    parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--max-turns", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--gamma", type=float, default=0.99)

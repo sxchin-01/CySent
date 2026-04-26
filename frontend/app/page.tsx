@@ -129,6 +129,9 @@ export default function HomePage() {
       if (result.terminated || result.truncated) setRunning(false);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Step request failed.");
+      if (err instanceof Error && isBackendReachabilityError(err)) {
+        setActiveAgentLabel("Backend Offline");
+      }
       setRunning(false);
     } finally { setBusy(false); }
   };
@@ -145,7 +148,12 @@ export default function HomePage() {
       setTimeline([{ turn: synced.step, reward: 0, risk: synced.network_risk, uptime: uptimeFromAssets(synced.assets), breaches: breachesFromAssets(synced.assets), securityScore: securityScore(synced.network_risk) }]);
       setFrames([]); setReplayIndex(0);
       setActiveAgentLabel(AGENT_LABELS[actionSource] ?? "PPO Defender");
-    } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Reset request failed."); }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Reset request failed.");
+      if (err instanceof Error && isBackendReachabilityError(err)) {
+        setActiveAgentLabel("Backend Offline");
+      }
+    }
   };
 
   const handleStartPause = async () => {
@@ -161,7 +169,12 @@ export default function HomePage() {
       setFrames([]); setReplayIndex(0);
       setActiveAgentLabel(AGENT_LABELS[actionSource] ?? "PPO Defender");
       setRunning(true);
-    } catch (err) { setErrorMessage(err instanceof Error ? err.message : "Unable to start simulation."); }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Unable to start simulation.");
+      if (err instanceof Error && isBackendReachabilityError(err)) {
+        setActiveAgentLabel("Backend Offline");
+      }
+    }
   };
 
   const currentConfidence = activeState.intelligence?.reasoning?.decision_confidence ?? 0;
@@ -347,9 +360,13 @@ function securityScore(networkRisk: number): number {
   return Math.max(0, Math.round((1 - networkRisk) * 100));
 }
 
+function isBackendReachabilityError(err: Error): boolean {
+  return err.message.includes("Cannot reach backend") || err.message.includes("API timeout");
+}
+
 const AGENT_LABELS: Record<string, string> = {
   ppo_agent: "PPO Defender",
-  hf_llm_agent: "Colab LLM Defender",
+  hf_llm_agent: "HF LLM Defender",
   hybrid: "Hybrid Defender",
   random: "Random Baseline",
 };

@@ -4,6 +4,7 @@
 #   "transformers>=4.40.0",
 #   "peft>=0.11.0",
 #   "accelerate",
+#   "bitsandbytes>=0.46.1",
 #   "gymnasium",
 #   "numpy",
 #   "huggingface_hub",
@@ -17,7 +18,7 @@ Usage (HF Jobs CLI):
   # Test run (~50 steps, ~$0.35)
   hf jobs uv run --flavor t4-small --secrets HF_TOKEN scripts/train_on_hf.py --test
 
-  # Full run (~300 steps, lower cost than 500)
+  # Full run (~100 steps)
   hf jobs uv run --flavor t4-small --secrets HF_TOKEN --timeout 12h scripts/train_on_hf.py
 
   # Full run without SFT warm start
@@ -34,7 +35,7 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description="CySent Qwen Live RL on HF Jobs")
-    parser.add_argument("--steps", type=int, default=300, help="Training steps (episodes)")
+    parser.add_argument("--steps", type=int, default=100, help="Training steps (episodes)")
     parser.add_argument("--test", action="store_true", help="Quick test: 50 steps only")
     parser.add_argument("--max-turns", type=int, default=100, help="Max env turns per episode")
     parser.add_argument("--lr", type=float, default=1e-5)
