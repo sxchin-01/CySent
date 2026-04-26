@@ -18,4 +18,4 @@ huggingface_hub>=0.23.0
 datasets>=2.19.0
 
 # Optional: for better performance
-bitsandbytes>=0.43.0
+bitsandbytes>=0.46.1
