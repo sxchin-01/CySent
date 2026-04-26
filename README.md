@@ -58,6 +58,22 @@ CySent is designed for submission/demo workflows where you need:
 	2. Script path used by jobs: `scripts/train_on_hf.py`.
 	3. Merge/export helper: `merge_upload.py`.
 
+## Training the Model
+
+To reproduce the live RL training:
+
+```bash
+hf jobs uv run --flavor t4-small --secrets HF_TOKEN --timeout 12h scripts/train_on_hf.py
+```
+
+This will run 100 training steps on a free-tier T4 GPU and generate training metrics (reward, loss, turns) saved to `training_history.json`.
+
+For a quick test run (50 steps, ~20 min, ~$0.35):
+
+```bash
+hf jobs uv run --flavor t4-small --secrets HF_TOKEN scripts/train_on_hf.py --test
+```
+
 ## Hugging Face Repositories
 
 1. Space repo (app code):
