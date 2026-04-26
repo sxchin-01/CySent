@@ -154,6 +154,23 @@ Current screenshot assets in repo:
 3. Provider/endpoint behavior may vary by account routing; merged model repo usage is the most stable path for this project.
 4. On Windows, running multiple uvicorn instances causes `WinError 10048` on port `8000`; keep one backend instance only.
 
+## Results
+
+Current benchmark outputs are available in the repository and were generated from the live CySent environment:
+
+1. PPO vs Random benchmark artifacts:
+	1. `outputs/benchmarks_ppo_only/benchmark_summary.json`
+	2. `outputs/benchmarks_ppo_only/benchmark_results.csv`
+	3. `outputs/benchmarks_ppo_only/benchmark_report.md`
+	4. `outputs/benchmarks_ppo_only/benchmark_plot.png`
+2. Mixed-agent benchmark artifacts:
+	1. `outputs/benchmarks_hf_full/benchmark_summary.json`
+	2. `outputs/benchmarks_hf_full/benchmark_results.csv`
+	3. `outputs/benchmarks_hf_full/benchmark_report.md`
+	4. `outputs/benchmarks_hf_full/benchmark_plot.png`
+
+Training evidence is still being finalized in the live RL notebook, but the project already includes the runnable notebook and benchmark outputs needed to reproduce evaluation.
+
 ## Submission Links (Placeholders)
 
 1. Demo video: `TBD`
