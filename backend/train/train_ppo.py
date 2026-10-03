@@ -4,15 +4,19 @@ import argparse
 import copy
 import hashlib
 import json
+import platform
 import random
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 import matplotlib.pyplot as plt
+import gymnasium
 import numpy as np
 import pandas as pd
+import stable_baselines3
 import torch
 import yaml
 
@@ -24,6 +28,11 @@ from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv
 
 from backend.env.security_env import CySentSecurityEnv, maybe_register_openenv_env
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+HISTORICAL_PPO_PATH = PROJECT_ROOT / "backend/train/artifacts/best_model/best_model.zip"
+P1_BASELINE_PATH = PROJECT_ROOT / "outputs/benchmarks/p1_baseline_v2"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "name": "CySent_v1_locked",
@@ -258,6 +267,48 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _json_compatible(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    return value
+
+
+def _git(*args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def _validate_model_alias(model_path: str) -> tuple[Path, Path]:
+    model_alias = Path(model_path)
+    if not model_alias.is_absolute():
+        model_alias = PROJECT_ROOT / model_alias
+    alias_zip = model_alias.with_suffix(".zip").resolve()
+
+    if alias_zip == HISTORICAL_PPO_PATH.resolve():
+        raise ValueError(f"Refusing to overwrite historical PPO checkpoint: {alias_zip}")
+    if P1_BASELINE_PATH.resolve() in alias_zip.parents:
+        raise ValueError(f"Refusing to write training artifacts into the P1 baseline: {alias_zip}")
+    if alias_zip.exists():
+        raise FileExistsError(f"Refusing to overwrite existing model alias: {alias_zip}")
+
+    return model_alias, alias_zip
+
+
 def _ensure_run_dir(root: Path, run_name: str, seed: int) -> Path:
     base = root / f"{run_name}_seed{seed}"
     if not base.exists():
@@ -338,7 +389,7 @@ def train(
 
     _set_deterministic(int(config["training"]["seed"]))
 
-    model_alias = Path(model_path)
+    model_alias, alias_zip = _validate_model_alias(model_path)
     artifacts_root = model_alias.parent if model_alias.parent != Path("") else Path("backend/train/artifacts")
     artifacts_root.mkdir(parents=True, exist_ok=True)
 
@@ -355,16 +406,17 @@ def train(
         monitor_dir=str(run_monitor_dir),
     )
     eval_env = _build_eval_env(
-        seed=int(config["training"]["seed"]) + 999,
-        max_steps=int(config["env"]["max_steps"]),
+        seed=int(config["evaluation"].get("seed", config["training"]["seed"])),
+        max_steps=int(config["evaluation"].get("max_steps", config["env"]["max_steps"])),
     )
 
     ppo_cfg = config["ppo"]
+    requested_device = "cuda" if torch.cuda.is_available() else "cpu"
     model = PPO(
         ppo_cfg.get("policy", "MlpPolicy"),
         env,
         verbose=1,
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        device=requested_device,
         learning_rate=linear_schedule(float(ppo_cfg["learning_rate"])),
         n_steps=int(ppo_cfg["n_steps"]),
         batch_size=int(ppo_cfg["batch_size"]),
@@ -392,12 +444,54 @@ def train(
         best_model_save_path=str(run_dir / "best_model"),
         log_path=str(run_logs_dir),
         eval_freq=max(10000 // max(int(config["env"]["n_envs"]), 1), 1),
+        n_eval_episodes=int(config["evaluation"].get("episodes", 5)),
         deterministic=True,
         render=False,
     )
 
     metrics_callback = CySentMetricsCallback(output_dir=str(run_dir), flush_freq=2500)
     callbacks = CallbackList([checkpoint_callback, eval_callback, metrics_callback])
+
+    tracked_files = [
+        Path("backend/env/security_env.py"),
+        Path("backend/env/reward.py"),
+        Path("backend/env/risk.py"),
+        Path("backend/env/threat_engine.py"),
+        Path("backend/train/train_ppo.py"),
+        Path("configs/v1_locked.yaml"),
+    ]
+    file_hashes = {
+        str(path): _file_sha256(PROJECT_ROOT / path)
+        for path in tracked_files
+        if (PROJECT_ROOT / path).exists()
+    }
+    git_status = _git("status", "--short")
+    config_snapshot = {
+        "config_name": config.get("name", "CySent_v1_locked"),
+        "run_name": run_name,
+        "seed": int(config["training"]["seed"]),
+        "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "resolved_config": config,
+        "diff_from_locked_baseline": _dict_diff(baseline, config),
+        "source": {
+            "git_commit": _git("rev-parse", "HEAD"),
+            "git_dirty": git_status not in {"", "unknown"},
+            "git_status": git_status.splitlines() if git_status not in {"", "unknown"} else [],
+            "file_sha256": file_hashes,
+        },
+        "runtime": {
+            "python": platform.python_version(),
+            "stable_baselines3": stable_baselines3.__version__,
+            "gymnasium": gymnasium.__version__,
+            "torch": torch.__version__,
+            "requested_device": requested_device,
+            "resolved_device": str(model.device),
+            "observation_shape": list(env.observation_space.shape),
+            "action_count": int(env.action_space.n),
+            "vecnormalize_enabled": False,
+        },
+    }
+    (run_dir / "config.json").write_text(json.dumps(config_snapshot, indent=2), encoding="utf-8")
 
     model.learn(
         total_timesteps=int(config["training"]["timesteps"]),
@@ -409,8 +503,15 @@ def train(
     model.save(str(run_model))
 
     # Compatibility alias path used in existing commands.
-    alias_zip = model_alias.with_suffix(".zip")
     run_zip = run_model.with_suffix(".zip")
+    loaded_model = PPO.load(str(run_zip), device="cpu")
+    model_load_verified = bool(
+        loaded_model.observation_space.shape == env.observation_space.shape
+        and loaded_model.action_space.n == env.action_space.n
+    )
+    if not model_load_verified:
+        raise RuntimeError("Saved PPO checkpoint failed observation/action compatibility verification.")
+
     if run_zip.exists() and alias_zip.resolve() != run_zip.resolve():
         alias_zip.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(run_zip, alias_zip)
@@ -427,31 +528,18 @@ def train(
     env.close()
     eval_env.close()
 
-    tracked_files = [
-        Path("backend/env/security_env.py"),
-        Path("backend/env/reward.py"),
-        Path("backend/env/risk.py"),
-        Path("backend/train/train_ppo.py"),
-    ]
-    file_hashes = {str(p): _file_sha256(p) for p in tracked_files if p.exists()}
-
-    config_snapshot = {
-        "config_name": config.get("name", "CySent_v1_locked"),
-        "run_name": run_name,
-        "seed": int(config["training"]["seed"]),
-        "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "resolved_config": config,
-        "diff_from_locked_baseline": _dict_diff(baseline, config),
-        "tracked_file_hashes": file_hashes,
-    }
-    (run_dir / "config.json").write_text(json.dumps(config_snapshot, indent=2), encoding="utf-8")
-
-    metrics = {
+    best_model_zip = run_dir / "best_model" / "best_model.zip"
+    metrics = _json_compatible({
         "run_name": run_name,
         "run_dir": str(run_dir),
         "model_path": str(run_zip),
         "model_alias_path": str(alias_zip),
+        "model_sha256": _file_sha256(run_zip),
+        "model_load_verified": model_load_verified,
+        "best_model_path": str(best_model_zip),
+        "best_model_sha256": _file_sha256(best_model_zip) if best_model_zip.exists() else None,
         "total_timesteps": int(config["training"]["timesteps"]),
+        "actual_total_timesteps": int(model.num_timesteps),
         "seed": int(config["training"]["seed"]),
         "max_steps": int(config["env"]["max_steps"]),
         "n_envs": int(config["env"]["n_envs"]),
@@ -459,6 +547,7 @@ def train(
         "checkpoint_dir": str(run_checkpoints_dir),
         "best_model_dir": str(run_dir / "best_model"),
         "monitor_dir": str(run_monitor_dir),
+        "evaluation_log_path": str(run_logs_dir / "evaluations.npz"),
         "vecnormalize_path": str(run_dir / "vecnormalize.json"),
         "config_path": str(run_dir / "config.json"),
         "metrics_path": str(run_dir / "metrics.json"),
@@ -468,7 +557,7 @@ def train(
             "uptime": str(run_dir / "uptime_curve.png"),
             "risk": str(run_dir / "risk_curve.png"),
         },
-    }
+    })
 
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
