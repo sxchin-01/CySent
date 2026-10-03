@@ -61,6 +61,7 @@ app.add_middleware(
 
 class StepRequest(BaseModel):
     action: int = Field(ge=0, le=11)
+    action_name: Optional[str] = None
 
 
 class ResetRequest(BaseModel):
@@ -105,6 +106,7 @@ class CySentRuntime:
         self.state_lock = threading.RLock()
         self.last_info: Dict[str, Any] = self.env.reset()[1]
         self.current_episode_id = str(uuid.uuid4())
+        self.episode_done = False
         self.replays: Dict[str, List[Dict[str, Any]]] = {}
         self.training: Dict[str, Any] = {
             "running": False,
@@ -174,7 +176,6 @@ class RuntimeManager:
 
 
 _manager = RuntimeManager()
-_manager.get()
 
 
 def _get_runtime(request: Request) -> CySentRuntime:
@@ -184,6 +185,59 @@ def _get_runtime(request: Request) -> CySentRuntime:
 
 def _default_runtime() -> CySentRuntime:
     return _manager.get()
+
+
+def _execute_action(
+    rt: CySentRuntime,
+    action: int,
+    *,
+    active_agent: str,
+    action_mode: str,
+) -> Dict[str, Any]:
+    if rt.episode_done:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "episode_complete",
+                "message": "The episode is complete. Reset before executing another action.",
+            },
+        )
+
+    _, reward, terminated, truncated, info = rt.env.step(action)
+    info["action_name"] = str(info.get("last_action", ACTION_NAMES[action]))
+    info["reward"] = float(reward)
+    info["selected_action"] = action
+    info["selected_action_name"] = ACTION_NAMES[action]
+    info["active_agent"] = active_agent
+    info["action_mode"] = action_mode
+
+    if terminated or truncated:
+        rt.replays[rt.current_episode_id] = list(rt.env.replay)
+        rt.episode_done = True
+
+    rt.last_info = info
+    return {
+        "episode_id": rt.current_episode_id,
+        "reward": float(reward),
+        "terminated": terminated,
+        "truncated": truncated,
+        "action_name": info["action_name"],
+        "selected_action": info.get("selected_action"),
+        "selected_action_name": info.get("selected_action_name"),
+        "active_agent": info.get("active_agent"),
+        "action_mode": info.get("action_mode"),
+        "network_risk": info["network_risk"],
+        "risk_breakdown": info.get("risk_breakdown", {}),
+        "assets": info["assets"],
+        "red_log": info["red_log"],
+        "profile": info.get("profile", {}),
+        "intelligence": info.get("intelligence", {}),
+        "events": info.get("events", []),
+        "narrative": info.get("narrative", ""),
+        "metrics": info["metrics"],
+        "reward_breakdown": info.get("reward_breakdown", {}),
+        "termination_reason": info.get("termination_reason", "active"),
+    }
 
 
 @app.get("/health")
@@ -200,18 +254,29 @@ def get_state(request: Request) -> Dict[str, Any]:
 def reset(req: ResetRequest, request: Request) -> Dict[str, Any]:
     rt = _get_runtime(request)
     with rt.state_lock:
-        if req.action_source in VALID_AGENT_NAMES:
-            switched = rt.agent_router.switch_agent(req.action_source)
-            if not switched:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "code": "agent_unavailable",
-                        "message": f"Requested agent '{req.action_source}' is unavailable.",
-                        "agent": req.action_source,
-                        "hint": "Check HF token/endpoint/model settings for hf_llm_agent.",
-                    },
-                )
+        if req.action_source not in VALID_AGENT_NAMES:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "invalid_agent",
+                    "message": f"Unknown agent '{req.action_source}'.",
+                    "agent": req.action_source,
+                },
+            )
+
+        switched = rt.agent_router.switch_agent(req.action_source)
+        if not switched:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "agent_unavailable",
+                    "message": f"Requested agent '{req.action_source}' is unavailable.",
+                    "agent": req.action_source,
+                    "hint": "Check the selected agent's model and runtime configuration.",
+                },
+            )
+
+        rt.agent_router.reset_episode(req.seed)
 
         _, info = rt.env.reset(
             seed=req.seed,
@@ -225,6 +290,7 @@ def reset(req: ResetRequest, request: Request) -> Dict[str, Any]:
             },
         )
         rt.current_episode_id = str(uuid.uuid4())
+        rt.episode_done = False
         rt.last_info = info
 
         return {
@@ -247,6 +313,14 @@ def reset(req: ResetRequest, request: Request) -> Dict[str, Any]:
 def step(request: Request) -> Dict[str, Any]:
     rt = _get_runtime(request)
     with rt.state_lock:
+        if rt.episode_done:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "episode_complete",
+                    "message": "The episode is complete. Reset before executing another action.",
+                },
+            )
         obs = rt.env._get_observation()
         state = rt.snapshot_state()
 
@@ -286,37 +360,37 @@ def step(request: Request) -> Dict[str, Any]:
                 },
             ) from exc
 
-        _, reward, terminated, truncated, info = rt.env.step(action)
-        info["action_name"] = ACTION_NAMES[action]
-        info["reward"] = float(reward)
-        info["selected_action"] = action
-        info["active_agent"] = rt.agent_router.get_active_agent_name()
+        response = _execute_action(
+            rt,
+            action,
+            active_agent=rt.agent_router.get_active_agent_name(),
+            action_mode="autonomous",
+        )
+        response["fallback_reason"] = rt.agent_router.last_fallback_reason
+        return response
 
-        if terminated or truncated:
-            rt.replays[rt.current_episode_id] = list(rt.env.replay)
-            rt.current_episode_id = str(uuid.uuid4())
-            rt.env.reset()
 
-        rt.last_info = info
-        return {
-            "episode_id": rt.current_episode_id,
-            "reward": float(reward),
-            "terminated": terminated,
-            "truncated": truncated,
-            "action_name": info["action_name"],
-            "selected_action": info.get("selected_action"),
-            "active_agent": info.get("active_agent"),
-            "network_risk": info["network_risk"],
-            "risk_breakdown": info.get("risk_breakdown", {}),
-            "assets": info["assets"],
-            "red_log": info["red_log"],
-            "profile": info.get("profile", {}),
-            "intelligence": info.get("intelligence", {}),
-            "events": info.get("events", []),
-            "narrative": info.get("narrative", ""),
-            "metrics": info["metrics"],
-            "termination_reason": info.get("termination_reason", "active"),
-        }
+@app.post("/step/manual")
+def step_manual(req: StepRequest, request: Request) -> Dict[str, Any]:
+    rt = _get_runtime(request)
+    with rt.state_lock:
+        canonical_name = ACTION_NAMES[req.action]
+        if req.action_name is not None and req.action_name != canonical_name:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "action_mismatch",
+                    "message": "Action id and action name do not match.",
+                    "action": req.action,
+                    "expected_action_name": canonical_name,
+                },
+            )
+        return _execute_action(
+            rt,
+            req.action,
+            active_agent="Manual Defender",
+            action_mode="manual",
+        )
 
 
 @app.get("/metrics")

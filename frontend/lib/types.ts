@@ -92,7 +92,12 @@ export type StepResult = {
   terminated: boolean;
   truncated: boolean;
   action_name: string;
+  selected_action?: number;
+  selected_action_name?: string;
   active_agent?: string;
+  action_mode?: "manual" | "autonomous";
+  fallback_reason?: string | null;
+  reward_breakdown?: Record<string, number>;
   network_risk: number;
   risk_breakdown: Partial<RiskBreakdown>;
   assets: AssetState[];

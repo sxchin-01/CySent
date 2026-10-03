@@ -245,8 +245,10 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None,
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        super().reset(seed=seed)
         if seed is not None:
             self.seed(seed)
+            self.action_space.seed(seed)
 
         self.runtime_profiles = self._resolve_profiles(options)
         self._resolve_runtime_controls(options)
@@ -298,6 +300,8 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         assert self.action_space.contains(action), f"invalid action: {action}"
         self.current_step += 1
 
+        assets_prev = copy.deepcopy(self.assets)
+        segmented_finance_prev = self.segmented_finance
         self.defender_budget_remaining = self.defender_budget_max
         for key in list(self.action_cooldowns.keys()):
             self.action_cooldowns[key] = max(0, int(self.action_cooldowns[key]) - 1)
@@ -305,7 +309,6 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         if self.credential_reset_friction_turns > 0:
             self.credential_reset_friction_turns -= 1
 
-        assets_prev = copy.deepcopy(self.assets)
         action_name, action_cost, blue_action_notes = self._apply_blue_action(action)
         self.recent_actions.append(action_name)
         if len(self.recent_actions) > 8:
@@ -364,6 +367,7 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
         terminated, termination_reason = self._is_terminal()
         truncated = self.current_step >= self.max_steps
 
+        reward_debug: Dict[str, float] = {}
         reward = compute_reward(
             assets_prev=assets_prev,
             assets_curr=self.assets,
@@ -372,6 +376,7 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
             action_cost=action_cost,
             context={
                 "segmented_finance": self.segmented_finance,
+                "segmented_finance_prev": segmented_finance_prev,
                 "last_action": action_name,
                 "previous_action": self.previous_action_name,
                 "red_success": bool(red_log.get("success", False)),
@@ -379,11 +384,13 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
                 "truncated": truncated,
                 "termination_reason": termination_reason,
             },
+            breakdown=reward_debug,
         )
 
         self.episode_metrics.total_reward += reward
         self.episode_metrics.successful_attacks += int(red_log.get("success", False))
-        self.episode_metrics.prevented_attacks += int(not red_log.get("success", False))
+        attack_executed = str(red_log.get("attack", "no_attack")) != "no_attack"
+        self.episode_metrics.prevented_attacks += int(attack_executed and not red_log.get("success", False))
         self.episode_metrics.breaches = sum(1 for a in self.assets if a["compromised"])
         self.episode_metrics.downtime_events = sum(1 for a in self.assets if not a["uptime_status"])
 
@@ -507,6 +514,7 @@ class CySentSecurityEnv(gym.Env[np.ndarray, int]):
             risk_breakdown_override=risk_breakdown_now,
         )
         info["termination_reason"] = termination_reason
+        info["reward_breakdown"] = reward_debug
 
         self.previous_action_name = action_name
         self.replay.append(

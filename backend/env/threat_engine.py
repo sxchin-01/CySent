@@ -59,6 +59,7 @@ class ThreatEngine:
         self.reset_episode_state()
 
     def reset_episode_state(self) -> None:
+        self._campaign_counter = 0
         self._active_chain = None
         self._blue_action_memory = []
         self._stealth_meter = 0.0

@@ -101,15 +101,6 @@ def _read_adapter_base_model_name(adapter_path: str) -> Optional[str]:
         return None
 
 
-def _mask_token(token: Optional[str]) -> str:
-    if not token:
-        return "<missing>"
-    token = str(token).strip()
-    if len(token) <= 8:
-        return "*" * len(token)
-    return f"{token[:4]}...{token[-4:]}"
-
-
 def _clean_env_value(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
@@ -159,10 +150,7 @@ class HFAgent:
         self._tried_default_provider = False
         self._token_validity_checked = False
         self._token_is_valid = False
-        print(
-            f"[HFAgent] HF token detected={bool(self.token)} "
-            f"token={_mask_token(self.token)} source={self.token_source}"
-        )
+        print(f"[HFAgent] HF token detected={bool(self.token)} source={self.token_source}")
         self._validate_token_once_at_startup()
         self._initialize_client()
 

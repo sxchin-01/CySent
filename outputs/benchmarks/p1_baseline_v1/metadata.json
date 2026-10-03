@@ -1,0 +1,240 @@
+{
+  "schema_version": 1,
+  "run_utc": "2026-10-03T08:31:54.083783+00:00",
+  "git": {
+    "commit": "ecd502c8505781cfd38af48d598a268b4073bb22",
+    "branch": "main",
+    "dirty": true,
+    "status": [
+      "M backend/agents/hf_agent.py",
+      " M backend/agents/router.py",
+      " M backend/api/main.py",
+      " M backend/env/reward.py",
+      " M backend/env/security_env.py",
+      " M backend/env/threat_engine.py",
+      " M backend/train/benchmark_agents.py",
+      " M frontend/components/dashboard.tsx",
+      " M frontend/lib/api.ts",
+      " M frontend/lib/types.ts",
+      "?? backend/agents/heuristic_agent.py",
+      "?? benchmark_agents.py",
+      "?? openapi.json",
+      "?? tests/"
+    ]
+  },
+  "agents": [
+    "random",
+    "heuristic",
+    "ppo_existing_checkpoint"
+  ],
+  "seeds": [
+    42,
+    43,
+    44
+  ],
+  "max_steps": 150,
+  "matrix": [
+    {
+      "case_id": "c00_s42",
+      "scenario": "bank",
+      "difficulty": "hard",
+      "attacker": "ransomware_gang",
+      "seed": 42
+    },
+    {
+      "case_id": "c00_s43",
+      "scenario": "bank",
+      "difficulty": "hard",
+      "attacker": "ransomware_gang",
+      "seed": 43
+    },
+    {
+      "case_id": "c00_s44",
+      "scenario": "bank",
+      "difficulty": "hard",
+      "attacker": "ransomware_gang",
+      "seed": 44
+    },
+    {
+      "case_id": "c01_s42",
+      "scenario": "saas",
+      "difficulty": "hard",
+      "attacker": "silent_apt",
+      "seed": 42
+    },
+    {
+      "case_id": "c01_s43",
+      "scenario": "saas",
+      "difficulty": "hard",
+      "attacker": "silent_apt",
+      "seed": 43
+    },
+    {
+      "case_id": "c01_s44",
+      "scenario": "saas",
+      "difficulty": "hard",
+      "attacker": "silent_apt",
+      "seed": 44
+    },
+    {
+      "case_id": "c02_s42",
+      "scenario": "hospital",
+      "difficulty": "medium",
+      "attacker": "insider_saboteur",
+      "seed": 42
+    },
+    {
+      "case_id": "c02_s43",
+      "scenario": "hospital",
+      "difficulty": "medium",
+      "attacker": "insider_saboteur",
+      "seed": 43
+    },
+    {
+      "case_id": "c02_s44",
+      "scenario": "hospital",
+      "difficulty": "medium",
+      "attacker": "insider_saboteur",
+      "seed": 44
+    }
+  ],
+  "expected_episode_count": 27,
+  "completed_episode_count": 27,
+  "failure_count": 0,
+  "environment": {
+    "observation_shape": [
+      67
+    ],
+    "action_count": 12,
+    "action_names": {
+      "0": "do_nothing",
+      "1": "patch_hr_systems",
+      "2": "patch_web_server",
+      "3": "patch_auth_server",
+      "4": "rotate_credentials",
+      "5": "isolate_suspicious_host",
+      "6": "increase_monitoring",
+      "7": "restore_backup",
+      "8": "deploy_honeypot",
+      "9": "phishing_training",
+      "10": "investigate_top_alert",
+      "11": "segment_finance_database"
+    },
+    "source_sha256": {
+      "backend\\env\\security_env.py": "1CCF13B3F27984EE625B0DCE3DCDC0D297B313E60F28D891498D142C324208D1",
+      "backend\\env\\reward.py": "84419617CFBEE5FFF579F058477D3CABA5321E732E6E06541CE101545609521D",
+      "backend\\env\\threat_engine.py": "E5578F8664AFA519C51E1AD34735D40FD02078C73EBC85B3BD981ACCFB6FE4E3",
+      "backend\\agents\\heuristic_agent.py": "AACBD3C14FC4E089830AA2EAEE86D7919BF6532F9E2F5288F37B173BE4D5B6B0",
+      "backend\\train\\benchmark_agents.py": "B41E1075A2145E069B68BE447005B58A175F0DFBE7C2B9B193638D0863A5141B",
+      "configs\\v1_locked.yaml": "67E1D86893938BD926214E8314BE10626ABB05C4CDBDAA45BB7DC37704B25381"
+    }
+  },
+  "ppo": {
+    "label": "Existing/Historical PPO Checkpoint",
+    "agent_id": "ppo_existing_checkpoint",
+    "path": "backend\\train\\artifacts\\best_model\\best_model.zip",
+    "sha256": "4D4955993DD2D98CC3B8D3319C1CDA92F10EFBA95407B3D78D9763E5D968D1AF",
+    "committed": false,
+    "vecnormalize_required": false,
+    "provenance": "Incomplete; compatibility verified, exact P0-corrected training source not claimed."
+  },
+  "metric_definitions": {
+    "total_reward": {
+      "scope": "episode",
+      "direction": "higher",
+      "definition": "Sum of environment rewards across the episode."
+    },
+    "breach_rate": {
+      "scope": "episode-final",
+      "direction": "lower",
+      "definition": "Final compromised assets divided by total assets."
+    },
+    "successful_attacks": {
+      "scope": "episode",
+      "direction": "lower",
+      "definition": "Count of RED attempts whose red_log.success is true."
+    },
+    "prevented_attacks": {
+      "scope": "episode",
+      "direction": "higher",
+      "definition": "Count of scheduled RED attempts that failed; no-attack turns are excluded."
+    },
+    "prevention_rate": {
+      "scope": "episode",
+      "direction": "higher",
+      "definition": "Prevented attacks divided by scheduled attack attempts; zero when there were no attempts."
+    },
+    "compromised_assets": {
+      "scope": "episode-final",
+      "direction": "lower",
+      "definition": "Count of compromised assets in the final state."
+    },
+    "critical_compromised_assets": {
+      "scope": "episode-final",
+      "direction": "lower",
+      "definition": "Final compromised assets listed as critical by the active scenario."
+    },
+    "mean_network_risk": {
+      "scope": "episode",
+      "direction": "lower",
+      "definition": "Arithmetic mean of post-transition network risk over all turns."
+    },
+    "final_network_risk": {
+      "scope": "episode-final",
+      "direction": "lower",
+      "definition": "Network risk after the final transition."
+    },
+    "peak_network_risk": {
+      "scope": "episode",
+      "direction": "lower",
+      "definition": "Maximum initial or post-transition network risk."
+    },
+    "mean_uptime": {
+      "scope": "episode",
+      "direction": "higher",
+      "definition": "Mean per-turn fraction of assets with uptime_status=true."
+    },
+    "final_uptime": {
+      "scope": "episode-final",
+      "direction": "higher",
+      "definition": "Final fraction of assets with uptime_status=true."
+    },
+    "mean_downtime": {
+      "scope": "episode",
+      "direction": "lower",
+      "definition": "One minus mean uptime."
+    },
+    "action_cost": {
+      "scope": "episode",
+      "direction": "lower",
+      "definition": "Sum of action_cost reported by reward_breakdown."
+    },
+    "substituted_actions": {
+      "scope": "episode",
+      "direction": "lower",
+      "definition": "Requested actions replaced by a different executed action due to environment constraints."
+    },
+    "repeated_actions": {
+      "scope": "episode",
+      "direction": "lower",
+      "definition": "Consecutive requested actions equal to the preceding requested action."
+    },
+    "survival_turns": {
+      "scope": "episode",
+      "direction": "higher",
+      "definition": "Number of transitions before termination or truncation."
+    },
+    "decision_latency_ms": {
+      "scope": "episode",
+      "direction": "lower",
+      "definition": "Mean wall-clock policy decision latency per turn in milliseconds."
+    },
+    "fallback_count": {
+      "scope": "episode",
+      "direction": "lower",
+      "definition": "Decisions where a router reported fallback to another agent."
+    }
+  },
+  "aggregation": "Arithmetic mean and population standard deviation across completed episodes; no outlier removal.",
+  "historical_results_included": false
+}

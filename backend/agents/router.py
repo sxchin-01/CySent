@@ -6,9 +6,10 @@ from typing import Any, Dict, Optional
 
 from backend.agents.hf_agent import HFAgent
 from backend.agents.ppo_agent import PPOAgent
+from backend.agents.random_agent import RandomAgent
 
 
-VALID_AGENT_NAMES = {"ppo_agent", "hf_llm_agent"}
+VALID_AGENT_NAMES = {"ppo_agent", "hf_llm_agent", "hybrid", "random", "random_agent"}
 
 
 class AgentRouter:
@@ -22,13 +23,15 @@ class AgentRouter:
         # Initialize agents
         self.ppo_agent: Optional[PPOAgent] = None
         self.hf_agent: Optional[HFAgent] = None
+        self.random_agent: RandomAgent = RandomAgent()
         self._initialize_agents()
 
         # Credit saving modes
         self.full_llm = bool(self.config.get("full_llm", False))
-        self.hybrid_threshold = int(self.config.get("hybrid_threshold", 10))  # Every N turns for hybrid
+        self.hybrid_threshold = max(1, int(self.config.get("hybrid_threshold", 10)))  # Every N turns for hybrid
         self.turn_counter = 0
         self.last_used_agent = "ppo_agent"
+        self.last_fallback_reason: Optional[str] = None
 
     def _load_config(self) -> Dict[str, Any]:
         """Load agent configuration."""
@@ -73,8 +76,13 @@ class AgentRouter:
 
     def predict_action(self, observation: Any, state: Dict[str, Any]) -> int:
         """Route action prediction to appropriate agent with fallback."""
+        self.last_fallback_reason = None
         network_risk = state.get("network_risk", 0.0)
         self.turn_counter += 1
+
+        if self.default_agent == "random_agent":
+            self.last_used_agent = "random_agent"
+            return int(self.random_agent.predict_action())
 
         # Forced source selection from API/UI takes precedence.
         if self.default_agent == "hf_llm_agent":
@@ -107,24 +115,27 @@ class AgentRouter:
                 if self.default_agent == "hf_llm_agent":
                     print(f"[AgentRouter] HF predict failed in explicit hf_llm_agent mode: {type(exc).__name__}: {exc}")
                     raise
-                pass
+                self.last_fallback_reason = f"HF prediction failed ({type(exc).__name__}); used PPO fallback."
 
         # Use PPO (or fallback to random if PPO unavailable)
         if self.ppo_agent and self.ppo_agent.is_available():
             try:
                 self.last_used_agent = "ppo_agent"
                 return self.ppo_agent.predict_action(observation, deterministic=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RuntimeError(f"PPO prediction failed ({type(exc).__name__}): {exc}") from exc
 
-        # Final fallback: deterministic safe no-op when PPO is unavailable.
-        self.last_used_agent = "ppo_agent"
-        return 0
+        raise RuntimeError("PPO agent is unavailable; no autonomous action was executed.")
 
     async def predict_action_async(self, observation: Any, state: Dict[str, Any]) -> int:
         """Async version of predict_action with proper HF handling."""
+        self.last_fallback_reason = None
         network_risk = state.get("network_risk", 0.0)
         self.turn_counter += 1
+
+        if self.default_agent == "random_agent":
+            self.last_used_agent = "random_agent"
+            return int(self.random_agent.predict_action())
 
         if self.default_agent == "hf_llm_agent":
             use_hf = True
@@ -148,7 +159,7 @@ class AgentRouter:
                 if self.default_agent == "hf_llm_agent":
                     print(f"[AgentRouter] HF async predict failed in explicit hf_llm_agent mode: {type(exc).__name__}: {exc}")
                     raise
-                pass
+                self.last_fallback_reason = f"HF prediction failed ({type(exc).__name__}); used PPO fallback."
 
         # Use PPO (or fallback to random if PPO unavailable)
         if self.ppo_agent and self.ppo_agent.is_available():
@@ -159,11 +170,10 @@ class AgentRouter:
                 )
                 self.last_used_agent = "ppo_agent"
                 return action
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RuntimeError(f"PPO prediction failed ({type(exc).__name__}): {exc}") from exc
 
-        self.last_used_agent = "ppo_agent"
-        return 0
+        raise RuntimeError("PPO agent is unavailable; no autonomous action was executed.")
 
     def get_active_agent_name(self) -> str:
         """Get the name of the currently active agent for UI display."""
@@ -171,8 +181,16 @@ class AgentRouter:
             if self.hf_agent is not None:
                 return self.hf_agent.deployment_label()
             return "HF LLM Defender"
+        if self.last_used_agent == "random_agent":
+            return "Random Baseline"
         else:
             return "PPO Defender"
+
+    def reset_episode(self, seed: Optional[int] = None) -> None:
+        """Reset per-episode routing state and the Random policy stream."""
+        self.turn_counter = 0
+        self.last_fallback_reason = None
+        self.random_agent.reset(seed)
 
     def is_agent_available(self, agent_name: str) -> bool:
         """Check if a specific agent is available."""
@@ -180,6 +198,8 @@ class AgentRouter:
             return self.ppo_agent is not None and self.ppo_agent.is_available()
         elif agent_name == "hf_llm_agent":
             return self.hf_agent is not None and self.hf_agent.is_available()
+        elif agent_name in {"random", "random_agent", "hybrid"}:
+            return True
         return False
 
     def set_mode(self, mode: str) -> None:
@@ -195,19 +215,38 @@ class AgentRouter:
 
     def switch_agent(self, agent_name: str) -> bool:
         """Switch to a specific agent if available."""
-        if agent_name not in ["ppo_agent", "hf_llm_agent"]:
+        canonical = {
+            "random": "random_agent",
+            "random_agent": "random_agent",
+            "hybrid": "hybrid",
+            "ppo_agent": "ppo_agent",
+            "hf_llm_agent": "hf_llm_agent",
+        }.get(agent_name)
+
+        if canonical is None:
             return False
 
-        if not self.is_agent_available(agent_name):
+        if canonical in {"ppo_agent", "hf_llm_agent"} and not self.is_agent_available(canonical):
             return False
 
-        self.default_agent = agent_name
-        if agent_name == "ppo_agent":
+        if canonical == "hybrid":
+            self.default_agent = "ppo_agent"
+            self.mode = "hybrid"
+            self.full_llm = False
+            return True
+
+        if canonical == "random_agent":
+            self.default_agent = "random_agent"
+            self.mode = "ppo_only"
+            self.full_llm = False
+            return True
+
+        self.default_agent = canonical
+        if canonical == "ppo_agent":
             # Explicit PPO selection should never route through HF.
             self.mode = "ppo_only"
             self.full_llm = False
-        elif agent_name == "hf_llm_agent":
+        elif canonical == "hf_llm_agent":
             self.mode = "full_llm"
             self.full_llm = True
         return True
-        return False

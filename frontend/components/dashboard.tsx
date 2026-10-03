@@ -15,7 +15,7 @@ import {
 } from "recharts";
 import { Shield, Siren, BrainCircuit, Gauge, Sparkles } from "lucide-react";
 
-import { fetchState, step } from "@/lib/api";
+import { fetchState, stepWithActionName } from "@/lib/api";
 import { NetworkGraph } from "@/components/network-graph";
 import { UICard } from "@/components/ui-card";
 import { Button } from "@/components/ui/button";
@@ -81,11 +81,11 @@ export function Dashboard() {
 
   const score = useMemo(() => Math.max(0, Math.round((1 - state.network_risk) * 100)), [state.network_risk]);
 
-  const runAction = async () => {
+  const runAction = async (actionName: string, actionId: number) => {
     if (busy) return;
     setBusy(true);
     try {
-      const result = await step();
+      const result = await stepWithActionName(actionName, actionId);
       setState((prev: EnvState) => ({
         ...prev,
         episode_id: result.episode_id,
@@ -175,7 +175,7 @@ export function Dashboard() {
             {ACTIONS.map((name, idx) => (
               <Button
                 key={name}
-                onClick={() => void runAction()}
+                onClick={() => void runAction(name, idx)}
                 disabled={busy}
                 variant="outline"
                 size="sm"

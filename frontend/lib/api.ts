@@ -94,8 +94,12 @@ export async function step(): Promise<StepResult> {
   });
 }
 
-export async function stepWithActionName(_actionName: string, _actionId: number): Promise<StepResult> {
-  return step();
+export async function stepWithActionName(actionName: string, actionId: number): Promise<StepResult> {
+  return requestJson<StepResult>("/step/manual", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: actionId, action_name: actionName }),
+  });
 }
 
 export async function resetSimulation(payload: {

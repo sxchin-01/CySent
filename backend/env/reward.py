@@ -19,11 +19,22 @@ def compute_reward(
     red_log: Dict[str, Any],
     action_cost: float,
     context: Optional[Dict[str, Any]] = None,
+    breakdown: Optional[Dict[str, float]] = None,
 ) -> float:
     """Reward shaping aligned to prevention, resilience, and efficient defense operations."""
     ctx = context or {}
-    prev_risk = compute_network_risk(assets_prev, context=ctx)
-    curr_risk = compute_network_risk(assets_curr, context=ctx)
+    prev_context = {
+        "segmented_finance": bool(ctx.get("segmented_finance_prev", ctx.get("segmented_finance", False))),
+        "last_action": str(ctx.get("previous_action", "")),
+        "red_success": False,
+    }
+    curr_context = {
+        "segmented_finance": bool(ctx.get("segmented_finance", False)),
+        "last_action": str(ctx.get("last_action", action_name)),
+        "red_success": bool(ctx.get("red_success", False)),
+    }
+    prev_risk = compute_network_risk(assets_prev, context=prev_context)
+    curr_risk = compute_network_risk(assets_curr, context=curr_context)
 
     prev_uptime = uptime_ratio(assets_prev)
     curr_uptime = uptime_ratio(assets_curr)
@@ -75,7 +86,8 @@ def compute_reward(
         reward += 0.35
     if action_name == "rotate_credentials" and attack_type in {"phishing_email", "password_spray", "credential_theft"} and curr_risk < prev_risk:
         reward += 0.45
-    if action_name == "segment_finance_database" and (not bool(ctx.get("segmented_finance", False))) and (not finance_prev["compromised"]) and curr_risk < prev_risk:
+    segmentation_activated = (not prev_context["segmented_finance"]) and curr_context["segmented_finance"]
+    if segmentation_activated and (not finance_prev["compromised"]) and curr_risk < prev_risk:
         reward += 0.45
     if action_name == "investigate_top_alert" and (red_success or any(a["infected"] or a["compromised"] for a in assets_prev)) and (infected_curr + compromised_curr) < (infected_prev + compromised_prev):
         reward += 0.35
@@ -134,7 +146,7 @@ def compute_reward(
     credential_exposure_prev = sum(float(a["credential_risk"]) for a in assets_prev) / max(len(assets_prev), 1)
     if action_name == "rotate_credentials" and (not credential_threat) and credential_exposure_prev < 0.42:
         reward -= 1.8
-    if action_name == "segment_finance_database" and bool(ctx.get("segmented_finance", False)):
+    if action_name == "segment_finance_database" and prev_context["segmented_finance"]:
         reward -= 2.2
     web_prev = _find_asset(assets_prev, "Web Server")
     if action_name == "patch_auth_server" and auth_prev["patch_level"] > 0.82 and (not auth_prev["infected"]) and (not auth_prev["compromised"]):
@@ -213,5 +225,19 @@ def compute_reward(
             reward -= 2.0
 
     # Keep PPO-safe scale without changing signal ordering.
+    unclipped_reward = float(reward)
     reward = max(-12.0, min(12.0, reward))
+    if breakdown is not None:
+        breakdown.update(
+            {
+                "previous_risk": float(prev_risk),
+                "current_risk": float(curr_risk),
+                "risk_delta": float(prev_risk - curr_risk),
+                "uptime_delta": float(curr_uptime - prev_uptime),
+                "breach_delta": float(prev_breach - curr_breach),
+                "action_cost": float(action_cost),
+                "unclipped_reward": unclipped_reward,
+                "reward": float(reward),
+            }
+        )
     return float(reward)
