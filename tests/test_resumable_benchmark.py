@@ -103,6 +103,29 @@ class ResumableBenchmarkTests(unittest.TestCase):
                     self._run(outdir, agents=["qwen_rl"], seeds=[1], model_metadata=model_b)
                 policy_set.assert_not_called()
 
+    def test_policy_contract_change_is_an_incompatible_resume(self) -> None:
+        model = {
+            "model_id": "owner/model",
+            "resolved_revision": "a" * 40,
+            "dtype": "float16",
+            "quantization": False,
+            "device": "cuda:0",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            outdir = Path(temp_dir)
+            with patch.object(benchmark, "PolicySet"), patch.object(benchmark, "run_episode", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    self._run(outdir, agents=["qwen_rl"], seeds=[1], model_metadata=model)
+
+            metadata_path = outdir / "metadata.json"
+            metadata = json.loads(metadata_path.read_text())
+            metadata["resume_contract"]["qwen_policy"]["mode"] = "generative_completion_parser"
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+            with patch.object(benchmark, "PolicySet") as policy_set:
+                with self.assertRaisesRegex(RuntimeError, "Refusing incompatible resume"):
+                    self._run(outdir, agents=["qwen_rl"], seeds=[1], model_metadata=model)
+                policy_set.assert_not_called()
+
     def test_failures_are_preserved_separately_and_not_completed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             outdir = Path(temp_dir)
@@ -153,8 +176,9 @@ class ResumableBenchmarkTests(unittest.TestCase):
 
     def test_hybrid_source_and_fallback_attribution_is_truthful(self) -> None:
         class Policies:
+            last_qwen_diagnostics = {"policy_mode": "historical_first_token_seeded_categorical_v1"}
             decisions = iter([
-                (0, "hf_llm_agent", None),
+                (0, "qwen_rl_policy", None),
                 (0, "ppo_agent", None),
                 (0, "ppo_agent", "HF prediction failed (RuntimeError); used PPO fallback."),
             ])
@@ -173,7 +197,8 @@ class ResumableBenchmarkTests(unittest.TestCase):
         self.assertEqual(row.ppo_fallbacks, 1)
         self.assertEqual(row.fallback_count, 1)
         self.assertEqual(len(json.loads(row.fallback_reasons)), 1)
-        self.assertEqual(json.loads(row.underlying_agents), ["hf_llm_agent", "ppo_agent", "ppo_agent"])
+        self.assertEqual(json.loads(row.underlying_agents), ["qwen_rl_policy", "ppo_agent", "ppo_agent"])
+        self.assertEqual(len(json.loads(row.qwen_rl_diagnostics)), 1)
 
     def test_frozen_p1_p2_evidence_is_not_modified(self) -> None:
         frozen = [

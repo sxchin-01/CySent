@@ -1,7 +1,7 @@
 """Live RL training of Qwen against the CySent environment.
 
 REINFORCE with exponential-moving-average baseline, LoRA on Qwen2.5-3B-Instruct.
-Runs the real env loop: observe -> prompt LLM -> parse action -> env.step -> reward.
+Runs the real env loop: observe -> prompt LLM -> constrained first-token logits -> sample action -> env.step -> reward.
 Designed for a single free-tier Colab GPU (T4 / L4).
 """
 from __future__ import annotations
@@ -19,9 +19,14 @@ import torch
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from backend.env.security_env import ACTION_NAMES, CySentSecurityEnv
+from backend.agents.qwen_rl_policy import (
+    HISTORICAL_ACTION_LIST,
+    build_historical_rl_prompt,
+    historical_action_token_ids,
+)
+from backend.env.security_env import CySentSecurityEnv
 
-ACTION_LIST = [ACTION_NAMES[i] for i in sorted(ACTION_NAMES.keys())]
+ACTION_LIST = HISTORICAL_ACTION_LIST
 NUM_ACTIONS = len(ACTION_LIST)
 ACTION_TO_ID = {name: i for i, name in enumerate(ACTION_LIST)}
 
@@ -32,10 +37,7 @@ _ACTION_TOKEN_IDS_CACHE: Optional[List[int]] = None
 def _action_token_ids(tokenizer: Any) -> List[int]:
     global _ACTION_TOKEN_IDS_CACHE
     if _ACTION_TOKEN_IDS_CACHE is None:
-        _ACTION_TOKEN_IDS_CACHE = []
-        for name in ACTION_LIST:
-            toks = tokenizer.encode(name, add_special_tokens=False)
-            _ACTION_TOKEN_IDS_CACHE.append(toks[0] if toks else 0)
+        _ACTION_TOKEN_IDS_CACHE = historical_action_token_ids(tokenizer)
     return _ACTION_TOKEN_IDS_CACHE
 
 
@@ -60,30 +62,7 @@ def _make_optimizer(params, lr: float, weight_decay: float):
 
 
 def _build_prompt(info: Dict[str, Any]) -> str:
-    risk = float(info.get("network_risk", 0.0))
-    rb = info.get("risk_breakdown", {})
-    red = info.get("red_log", {})
-    assets = info.get("assets", [])
-
-    compromised = [a["name"] for a in assets if a.get("compromised")]
-    infected = [a["name"] for a in assets if a.get("infected")]
-    attack = str(red.get("attack", "unknown"))
-    target = str(red.get("target", "unknown"))
-
-    top_risks = sorted(
-        ((k, v) for k, v in rb.items() if k != "network_risk" and isinstance(v, (int, float))),
-        key=lambda x: x[1], reverse=True,
-    )[:3]
-    risk_str = ", ".join(f"{k}={v:.2f}" for k, v in top_risks) if top_risks else "none"
-
-    return (
-        f"You are an expert cybersecurity defender.\n"
-        f"Network risk: {risk:.3f} | Attack: {attack} -> {target}\n"
-        f"Top risks: {risk_str}\n"
-        f"Compromised: {compromised or 'none'} | Infected: {infected or 'none'}\n"
-        f"Choose ONE action from: {', '.join(ACTION_LIST)}\n"
-        f"Answer with ONLY the action name."
-    )
+    return build_historical_rl_prompt(info)
 
 
 def _parse_action(text: str) -> Optional[int]:

@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 
 from backend.agents.hf_agent import HFAgent
 from backend.agents.ppo_agent import PPOAgent
+from backend.agents.qwen_rl_policy import QWEN_RL_SOURCE_ID, QwenRLPolicyAgent
 from backend.agents.random_agent import RandomAgent
 
 
@@ -54,7 +55,8 @@ class AgentRouter:
             print("[AgentRouter] PPO unavailable at startup.")
 
         try:
-            self.hf_agent = HFAgent(timeout=float(self.config.get("hf_timeout", os.getenv("HF_TIMEOUT", 10.0))))
+            hf_agent_class = QwenRLPolicyAgent if self.config.get("hf_policy_mode") == "qwen_rl" else HFAgent
+            self.hf_agent = hf_agent_class(timeout=float(self.config.get("hf_timeout", os.getenv("HF_TIMEOUT", 10.0))))
         except Exception as exc:
             self.hf_agent = None
             print(f"[AgentRouter] HF unavailable at startup: {type(exc).__name__}: {exc}")
@@ -73,6 +75,9 @@ class AgentRouter:
         every_n_turns = (self.turn_counter % self.hybrid_threshold) == 0
 
         return high_risk or every_n_turns
+
+    def _hf_source_id(self) -> str:
+        return str(getattr(self.hf_agent, "source_id", "hf_llm_agent"))
 
     def predict_action(self, observation: Any, state: Dict[str, Any]) -> int:
         """Route action prediction to appropriate agent with fallback."""
@@ -108,7 +113,7 @@ class AgentRouter:
         if use_hf and self.hf_agent:
             try:
                 action = self.hf_agent.predict_action(state)
-                self.last_used_agent = "hf_llm_agent"
+                self.last_used_agent = self._hf_source_id()
                 return action
             except Exception as exc:
                 # Fallback to PPO on HF failure
@@ -152,7 +157,7 @@ class AgentRouter:
         if use_hf and self.hf_agent:
             try:
                 action = await self.hf_agent.predict_action_async(state)
-                self.last_used_agent = "hf_llm_agent"
+                self.last_used_agent = self._hf_source_id()
                 return action
             except Exception as exc:
                 # Fallback to PPO on HF failure
@@ -177,7 +182,7 @@ class AgentRouter:
 
     def get_active_agent_name(self) -> str:
         """Get the name of the currently active agent for UI display."""
-        if self.last_used_agent == "hf_llm_agent":
+        if self.last_used_agent in {"hf_llm_agent", QWEN_RL_SOURCE_ID}:
             if self.hf_agent is not None:
                 return self.hf_agent.deployment_label()
             return "HF LLM Defender"
@@ -191,6 +196,9 @@ class AgentRouter:
         self.turn_counter = 0
         self.last_fallback_reason = None
         self.random_agent.reset(seed)
+        reset_hf = getattr(self.hf_agent, "reset", None)
+        if callable(reset_hf):
+            reset_hf(seed)
 
     def is_agent_available(self, agent_name: str) -> bool:
         """Check if a specific agent is available."""

@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from backend.agents.heuristic_agent import HeuristicAgent
 from backend.agents.ppo_agent import PPOAgent
+from backend.agents.qwen_rl_policy import QWEN_RL_POLICY_CONTRACT, QWEN_RL_SOURCE_ID
 from backend.agents.random_agent import RandomAgent
 from backend.agents.router import AgentRouter
 from backend.env.security_env import ACTION_NAMES, CySentSecurityEnv
@@ -118,6 +119,7 @@ class EpisodeResult:
     qwen_failures: int = 0
     ppo_fallbacks: int = 0
     fallback_reasons: str = "[]"
+    qwen_rl_diagnostics: str = "[]"
 
 
 @dataclass
@@ -219,12 +221,17 @@ class PolicySet:
         self.fresh_ppo = PPOAgent(str(fresh_ppo_path)) if FRESH_PPO_AGENT in agents and fresh_ppo_path is not None else None
         self.qwen: Optional[AgentRouter] = None
         self.hybrid: Optional[AgentRouter] = None
+        self.last_qwen_diagnostics: Optional[Dict[str, Any]] = None
         if "qwen_rl" in agents:
-            self.qwen = AgentRouter(config={"default_agent": "hf_llm_agent", "mode": "full_llm", "full_llm": True})
+            self.qwen = AgentRouter(config={
+                "default_agent": "hf_llm_agent", "mode": "full_llm", "full_llm": True, "hf_policy_mode": "qwen_rl",
+            })
             if not self.qwen.switch_agent("hf_llm_agent"):
                 raise RuntimeError("Qwen RL is unavailable; it cannot be included in the benchmark.")
         if "hybrid_router" in agents:
-            self.hybrid = AgentRouter(config={"default_agent": "ppo_agent", "mode": "hybrid", "full_llm": False})
+            self.hybrid = AgentRouter(config={
+                "default_agent": "ppo_agent", "mode": "hybrid", "full_llm": False, "hf_policy_mode": "qwen_rl",
+            })
             if not self.hybrid.is_agent_available("ppo_agent") or not self.hybrid.is_agent_available("hf_llm_agent"):
                 raise RuntimeError("Hybrid Router requires both PPO and Qwen to be available.")
             self.hybrid.switch_agent("hybrid")
@@ -235,9 +242,9 @@ class PolicySet:
         if agent == "heuristic":
             self.heuristic.reset()
         router = self.qwen if agent == "qwen_rl" else self.hybrid if agent == "hybrid_router" else None
+        self.last_qwen_diagnostics = None
         if router is not None:
-            router.turn_counter = 0
-            router.last_fallback_reason = None
+            router.reset_episode(seed)
 
     def decide(self, agent: str, env: CySentSecurityEnv, obs: np.ndarray, info: Dict[str, Any]) -> Tuple[int, str, Optional[str]]:
         if agent == "random":
@@ -255,7 +262,12 @@ class PolicySet:
         router = self.qwen if agent == "qwen_rl" else self.hybrid if agent == "hybrid_router" else None
         if router is None:
             raise ValueError(f"Unsupported agent: {agent}")
-        action = int(router.predict_action(obs, _agent_state(info)))
+        action = int(router.predict_action(obs, info))
+        if router.last_used_agent == QWEN_RL_SOURCE_ID:
+            diagnostics = getattr(router.hf_agent, "last_decision", None)
+            self.last_qwen_diagnostics = dict(diagnostics) if diagnostics else None
+        else:
+            self.last_qwen_diagnostics = None
         return action, router.last_used_agent, router.last_fallback_reason
 
 
@@ -281,6 +293,7 @@ def run_episode(*, agent: str, episode_index: int, case: ExperimentCase, max_ste
     executed: List[str] = []
     underlying: List[str] = []
     fallback_reasons: List[str] = []
+    qwen_rl_diagnostics: List[Dict[str, Any]] = []
     attempted_attacks = 0
     action_cost = 0.0
     substitutions = repeats = fallbacks = 0
@@ -299,6 +312,9 @@ def run_episode(*, agent: str, episode_index: int, case: ExperimentCase, max_ste
         fallbacks += int(bool(fallback_reason))
         if fallback_reason:
             fallback_reasons.append(fallback_reason)
+        decision_diagnostics = getattr(policies, "last_qwen_diagnostics", None)
+        if underlying_agent == QWEN_RL_SOURCE_ID and decision_diagnostics:
+            qwen_rl_diagnostics.append(decision_diagnostics)
 
         obs, reward, terminated, truncated, info = env.step(action)
         executed_name = str(info.get("last_action", requested_name))
@@ -353,12 +369,13 @@ def run_episode(*, agent: str, episode_index: int, case: ExperimentCase, max_ste
         requested_actions=json.dumps(requested, separators=(",", ":")),
         executed_actions=json.dumps(executed, separators=(",", ":")),
         underlying_agents=json.dumps(underlying, separators=(",", ":")),
-        qwen_decisions=sum(source == "hf_llm_agent" for source in underlying),
+        qwen_decisions=sum(source in {"hf_llm_agent", QWEN_RL_SOURCE_ID} for source in underlying),
         ordinary_ppo_decisions=max(sum(source == "ppo_agent" for source in underlying) - fallbacks, 0)
         if agent == "hybrid_router" else 0,
         qwen_failures=fallbacks if agent == "hybrid_router" else 0,
         ppo_fallbacks=fallbacks if agent == "hybrid_router" else 0,
         fallback_reasons=json.dumps(fallback_reasons, separators=(",", ":")),
+        qwen_rl_diagnostics=json.dumps(qwen_rl_diagnostics, separators=(",", ":")),
     )
 
 
@@ -613,12 +630,14 @@ def build_metadata(*, agents: Sequence[str], seeds: Sequence[int], plan: Sequenc
         PROJECT_ROOT / "backend/agents/random_agent.py",
         PROJECT_ROOT / "backend/agents/heuristic_agent.py",
         PROJECT_ROOT / "backend/agents/hf_agent.py",
+        PROJECT_ROOT / "backend/agents/qwen_rl_policy.py",
         PROJECT_ROOT / "backend/agents/router.py",
+        PROJECT_ROOT / "backend/train/train_qwen_rl.py",
         PROJECT_ROOT / "backend/train/benchmark_agents.py",
         PROJECT_ROOT / "configs/v1_locked.yaml",
     ]
     return {
-        "schema_version": 2 if resumable else 1,
+        "schema_version": 3 if resumable else 1,
         "run_utc": datetime.now(timezone.utc).isoformat(),
         "git": {
             "commit": _git("rev-parse", "HEAD"),
@@ -656,6 +675,7 @@ def build_metadata(*, agents: Sequence[str], seeds: Sequence[int], plan: Sequenc
             "committed": bool(_git("ls-files", _display_path(fresh_ppo_path))),
         } if fresh_ppo_path is not None else None,
         "qwen_model": _normalize_model_metadata(model_metadata),
+        "qwen_policy": QWEN_RL_POLICY_CONTRACT if {"qwen_rl", "hybrid_router"}.intersection(agents) else None,
         "status": "incomplete" if resumable else (
             "complete" if completed_count == len(agents) * len(plan) else "failed"
         ),
@@ -677,6 +697,7 @@ def _resume_contract(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "ppo": {key: metadata["ppo"][key] for key in ("agent_id", "path", "sha256")},
         "fresh_ppo": metadata["fresh_ppo"],
         "qwen_model": metadata["qwen_model"],
+        "qwen_policy": metadata["qwen_policy"],
     }
 
 
