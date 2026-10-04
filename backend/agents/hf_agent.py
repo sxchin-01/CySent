@@ -526,6 +526,7 @@ Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
         if model_device is None:
             model_device = next(self.model.parameters()).device
         inputs = {k: v.to(model_device) for k, v in inputs.items()}
+        input_token_count = int(inputs["input_ids"].shape[-1])
         with torch.no_grad() if torch is not None else nullcontext():
             output = self.model.generate(
                 **inputs,
@@ -534,7 +535,8 @@ Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
                 temperature=0.0,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
-        return str(self.tokenizer.decode(output[0], skip_special_tokens=True)).strip()
+        completion_tokens = output[0, input_token_count:]
+        return str(self.tokenizer.decode(completion_tokens, skip_special_tokens=True)).strip()
 
     def _parse_action(self, response: str) -> Optional[int]:
         """Parse the LLM response to extract a valid action."""
