@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "deployment_scope": "CySent v1 reproducible research/demo",
+  "canonical_agents": [
+    "random",
+    "heuristic",
+    "ppo_historical_checkpoint",
+    "ppo_fresh_checkpoint",
+    "qwen_rl",
+    "hybrid_router"
+  ],
+  "historical_qwen_policy": "historical_first_token_seeded_categorical_v1",
+  "artifacts": {
+    "historical_ppo": {
+      "agent_identity": "ppo_historical_checkpoint",
+      "required_for_cpu_demo": false,
+      "local_path": "backend/train/artifacts/best_model/best_model.zip",
+      "sha256": "4D4955993DD2D98CC3B8D3319C1CDA92F10EFBA95407B3D78D9763E5D968D1AF",
+      "compute": "CPU",
+      "unavailable_behavior": "ppo_historical_checkpoint is unavailable; no alternate checkpoint is substituted"
+    },
+    "fresh_ppo": {
+      "agent_identity": "ppo_fresh_checkpoint",
+      "required_for_cpu_demo": false,
+      "local_path": "backend/train/artifacts/p2_fresh_ppo/p2_fresh_primary_seed42/best_model/best_model.zip",
+      "sha256": "7BA9122F3AE4BD67E539EC3BEE95EB587F63F22091605DDEF044190586DC0197",
+      "compute": "CPU",
+      "unavailable_behavior": "ppo_fresh_checkpoint is unavailable; no historical checkpoint is substituted"
+    },
+    "qwen_merged": {
+      "agent_identity": "qwen_rl",
+      "required_for_cpu_demo": false,
+      "repository": "sxchin01/CySent-Qwen-RL-merged",
+      "revision": "fb75512b037bb37de575916afd900c03ab860cb5",
+      "local_placement": "Hugging Face cache: models--sxchin01--CySent-Qwen-RL-merged/snapshots/fb75512b037bb37de575916afd900c03ab860cb5",
+      "compute": "CUDA GPU expected for evaluated local inference",
+      "policy": "historical_first_token_seeded_categorical_v1",
+      "unavailable_behavior": "qwen_rl and hybrid_router are unavailable; generic generation is not substituted"
+    }
+  }
+}

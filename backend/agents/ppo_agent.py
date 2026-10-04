@@ -1,22 +1,42 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 try:
     from stable_baselines3 import PPO
 except ImportError:
     PPO = None
 
-from backend.env.security_env import CySentSecurityEnv
+from backend.artifacts import artifact_entry, artifact_path, verify_local_artifact
+
+
+CUSTOM_PPO_IDENTITY = "ppo_custom_checkpoint"
 
 
 class PPOAgent:
     """PPO agent for action prediction using trained model."""
 
-    def __init__(self, model_path: str = "backend/train/artifacts/best_model/best_model.zip") -> None:
-        self.model_path = model_path
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        *,
+        artifact_id: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> None:
+        if model_path is None:
+            artifact_id = artifact_id or "historical_ppo"
+            resolved_path = artifact_path(artifact_id)
+        else:
+            resolved_path = Path(model_path)
+        self.model_path = str(resolved_path)
+        self.artifact_id = artifact_id
+        self.identity = (
+            str(artifact_entry(artifact_id)["agent_identity"])
+            if artifact_id is not None
+            else CUSTOM_PPO_IDENTITY
+        )
+        self.device = device
         self.model: Optional[PPO] = None
         self._load_model()
 
@@ -27,14 +47,15 @@ class PPOAgent:
 
         model_file = Path(self.model_path)
         if not model_file.exists():
-            # Try fallback to cysent_ppo.zip
-            fallback_path = "backend/train/artifacts/cysent_ppo.zip"
-            if Path(fallback_path).exists():
-                model_file = Path(fallback_path)
-            else:
-                raise FileNotFoundError(f"PPO model not found at {self.model_path} or {fallback_path}")
+            raise FileNotFoundError(f"PPO model not found at configured path: {self.model_path}")
 
-        self.model = PPO.load(str(model_file))
+        if self.artifact_id is not None:
+            verify_local_artifact(self.artifact_id, model_file)
+
+        if self.device is None:
+            self.model = PPO.load(str(model_file))
+        else:
+            self.model = PPO.load(str(model_file), device=self.device)
 
     def predict_action(self, observation: Any, deterministic: bool = True) -> int:
         """Predict action from observation using PPO model.

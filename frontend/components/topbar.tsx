@@ -26,12 +26,12 @@ const SCENARIOS = ["bank", "hospital", "saas", "government", "manufacturing"];
 const DIFFICULTIES = ["easy", "medium", "hard"];
 const ATTACKERS = ["ransomware_gang", "credential_thief", "silent_apt", "insider_saboteur", "botnet"];
 const STRATEGIES: StrategyMode[] = ["conservative", "balanced", "aggressive"];
-const AGENTS: ActionSource[] = ["ppo_agent", "hf_llm_agent", "hybrid", "random"];
+const AGENTS: ActionSource[] = ["ppo_historical_checkpoint", "qwen_rl", "hybrid_router", "random"];
 
 const AGENT_ICON: Record<string, typeof Cpu> = {
-  ppo_agent: Cpu,
-  hf_llm_agent: Brain,
-  hybrid: GitMerge,
+  ppo_historical_checkpoint: Cpu,
+  qwen_rl: Brain,
+  hybrid_router: GitMerge,
   random: Shuffle,
 };
 

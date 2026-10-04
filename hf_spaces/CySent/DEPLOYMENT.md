@@ -1,4 +1,7 @@
-# HF Space Deployment Guide
+# DEPRECATED: Legacy HF Space Deployment Guide
+
+This standalone prototype is not the CySent v1 environment or authoritative
+research benchmark. It is retained only as historical deployment material.
 
 ## Quick Start
 

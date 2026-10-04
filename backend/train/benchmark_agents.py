@@ -23,14 +23,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.agents.heuristic_agent import HeuristicAgent
+from backend.agents.identities import FRESH_PPO_AGENT, HISTORICAL_PPO_AGENT
 from backend.agents.ppo_agent import PPOAgent
 from backend.agents.qwen_rl_policy import QWEN_RL_POLICY_CONTRACT, QWEN_RL_SOURCE_ID
 from backend.agents.random_agent import RandomAgent
 from backend.agents.router import AgentRouter
 from backend.env.security_env import ACTION_NAMES, CySentSecurityEnv
 
-PPO_AGENT = "ppo_existing_checkpoint"
-FRESH_PPO_AGENT = "ppo_fresh_checkpoint"
+PPO_AGENT = HISTORICAL_PPO_AGENT
 CORE_AGENTS = {"random", "heuristic", PPO_AGENT, FRESH_PPO_AGENT}
 DEFAULT_AGENTS = ["random", "heuristic", PPO_AGENT]
 DEFAULT_SEEDS = [42, 43, 44]
@@ -217,8 +217,12 @@ class PolicySet:
     def __init__(self, agents: Sequence[str], ppo_path: Path, fresh_ppo_path: Optional[Path] = None) -> None:
         self.random = RandomAgent()
         self.heuristic = HeuristicAgent()
-        self.ppo = PPOAgent(str(ppo_path)) if PPO_AGENT in agents else None
-        self.fresh_ppo = PPOAgent(str(fresh_ppo_path)) if FRESH_PPO_AGENT in agents and fresh_ppo_path is not None else None
+        self.ppo = PPOAgent(str(ppo_path), artifact_id="historical_ppo") if PPO_AGENT in agents else None
+        self.fresh_ppo = (
+            PPOAgent(str(fresh_ppo_path), artifact_id="fresh_ppo")
+            if FRESH_PPO_AGENT in agents and fresh_ppo_path is not None
+            else None
+        )
         self.qwen: Optional[AgentRouter] = None
         self.hybrid: Optional[AgentRouter] = None
         self.last_qwen_diagnostics: Optional[Dict[str, Any]] = None
@@ -370,7 +374,7 @@ def run_episode(*, agent: str, episode_index: int, case: ExperimentCase, max_ste
         executed_actions=json.dumps(executed, separators=(",", ":")),
         underlying_agents=json.dumps(underlying, separators=(",", ":")),
         qwen_decisions=sum(source in {"hf_llm_agent", QWEN_RL_SOURCE_ID} for source in underlying),
-        ordinary_ppo_decisions=max(sum(source == "ppo_agent" for source in underlying) - fallbacks, 0)
+        ordinary_ppo_decisions=max(sum(source == PPO_AGENT for source in underlying) - fallbacks, 0)
         if agent == "hybrid_router" else 0,
         qwen_failures=fallbacks if agent == "hybrid_router" else 0,
         ppo_fallbacks=fallbacks if agent == "hybrid_router" else 0,

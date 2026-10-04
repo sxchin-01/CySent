@@ -14,9 +14,19 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.agents import AgentRouter
+from backend.agents.identities import (
+    CANONICAL_RESEARCH_AGENTS,
+    FRESH_PPO_AGENT,
+    HEURISTIC_AGENT,
+    HISTORICAL_PPO_AGENT,
+    HYBRID_AGENT,
+    LEGACY_HF_AGENT,
+    QWEN_RL_AGENT,
+    RANDOM_AGENT,
+)
 from backend.agents.router import VALID_AGENT_NAMES
+from backend.artifacts import load_artifact_manifest
 from backend.env.security_env import ACTION_NAMES, CySentSecurityEnv
-from backend.train.benchmark import build_benchmark
 from backend.train.evaluate import evaluate
 from backend.train.train_ppo import train
 
@@ -70,7 +80,7 @@ class ResetRequest(BaseModel):
     difficulty: str = "medium"
     attacker: str = "legacy_default"
     strategy_mode: str = "balanced"
-    action_source: str = "ppo_agent"
+    action_source: str = HISTORICAL_PPO_AGENT
     intelligence_enabled: bool = True
 
 
@@ -250,6 +260,34 @@ def get_state(request: Request) -> Dict[str, Any]:
     return _get_runtime(request).snapshot_state()
 
 
+@app.get("/agents")
+def get_agents(request: Request) -> Dict[str, Any]:
+    """Expose canonical research identities without implying unsupported live availability."""
+    rt = _get_runtime(request)
+    live_supported = {RANDOM_AGENT, HISTORICAL_PPO_AGENT, QWEN_RL_AGENT, HYBRID_AGENT}
+    agents = []
+    for identity in CANONICAL_RESEARCH_AGENTS:
+        selectable = identity in live_supported
+        agents.append({
+            "identity": identity,
+            "authoritative_benchmark": True,
+            "live_selectable": selectable,
+            "available": bool(selectable and rt.agent_router.is_agent_available(identity)),
+            "reason": (
+                None
+                if selectable and rt.agent_router.is_agent_available(identity)
+                else "benchmark-only in P4"
+                if identity in {HEURISTIC_AGENT, FRESH_PPO_AGENT}
+                else "required local artifact is unavailable"
+            ),
+        })
+    return {
+        "agents": agents,
+        "legacy_compatibility_identity": LEGACY_HF_AGENT,
+        "artifact_manifest": load_artifact_manifest(),
+    }
+
+
 @app.post("/reset")
 def reset(req: ResetRequest, request: Request) -> Dict[str, Any]:
     rt = _get_runtime(request)
@@ -354,7 +392,7 @@ def step(request: Request) -> Dict[str, Any]:
                 detail={
                     "code": error_code,
                     "message": f"Agent prediction failed ({type(exc).__name__}).",
-                    "agent": "hf_llm_agent" if rt.agent_router.default_agent == "hf_llm_agent" else rt.agent_router.last_used_agent,
+                    "agent": rt.agent_router.default_agent,
                     "error": msg,
                     "hint": hint,
                 },
@@ -465,22 +503,16 @@ def start_training(req: TrainRequest) -> Dict[str, Any]:
     return {"message": "training started", "timesteps": req.timesteps}
 
 
-@app.post("/benchmark")
+@app.post("/benchmark", deprecated=True)
 def run_benchmark(req: BenchmarkRequest) -> Dict[str, Any]:
-    result = build_benchmark(
-        episodes=req.episodes,
-        max_steps=req.max_steps,
-        seed=req.seed,
-        agents=req.agents,
-        seeds=req.seeds,
-        stress=req.stress,
-        baseline_model=req.baseline_model,
-        tuned_model=req.tuned_model,
-        cloud_model=req.cloud_model,
-        output=req.output,
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "legacy_benchmark_disabled",
+            "message": "The API benchmark is non-authoritative and disabled in CySent v1.",
+            "authoritative_command": "python -m backend.train.benchmark_agents",
+        },
     )
-    _default_runtime().training["benchmark"] = result
-    return result
 
 
 @app.get("/benchmark/export")

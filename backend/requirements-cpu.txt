@@ -1,0 +1,10 @@
+# Pinned direct dependencies for the CySent v1 CPU research/demo path.
+fastapi==0.136.0
+uvicorn[standard]==0.44.0
+gymnasium==1.2.3
+numpy==2.4.4
+pandas==3.0.2
+matplotlib==3.10.8
+torch==2.11.0
+stable-baselines3==2.8.0
+PyYAML==6.0.3

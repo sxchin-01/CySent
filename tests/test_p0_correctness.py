@@ -15,6 +15,8 @@ from pydantic import ValidationError
 
 from backend.agents.router import AgentRouter
 from backend.agents.ppo_agent import PPOAgent
+from backend.agents.identities import HISTORICAL_PPO_AGENT, HYBRID_AGENT, QWEN_RL_AGENT
+from backend.agents.qwen_rl_policy import QWEN_RL_SOURCE_ID
 from backend.api import main as api
 from backend.env.security_env import ACTION_NAMES, CySentSecurityEnv
 from backend.env.threat_engine import ThreatEngine
@@ -211,6 +213,7 @@ class RoutingCorrectnessTests(unittest.TestCase):
             router = AgentRouter(config={"default_agent": "ppo_agent", "mode": "hybrid", "hybrid_threshold": 10})
         router.ppo_agent = _FakeAgent(3)
         router.hf_agent = _FakeAgent(7)
+        router.hf_agent.source_id = QWEN_RL_SOURCE_ID
         return router
 
     def test_explicit_ppo_qwen_and_hybrid_are_truthful(self) -> None:
@@ -220,21 +223,22 @@ class RoutingCorrectnessTests(unittest.TestCase):
         self.assertEqual(router.ppo_agent.calls, 1)
         self.assertEqual(router.hf_agent.calls, 0)
 
-        self.assertTrue(router.switch_agent("hf_llm_agent"))
+        self.assertTrue(router.switch_agent(QWEN_RL_AGENT))
         self.assertEqual(router.predict_action(np.zeros(2), {"network_risk": 0.1}), 7)
-        self.assertEqual(router.last_used_agent, "hf_llm_agent")
+        self.assertEqual(router.last_used_agent, QWEN_RL_SOURCE_ID)
 
-        self.assertTrue(router.switch_agent("hybrid"))
+        self.assertTrue(router.switch_agent(HYBRID_AGENT))
         self.assertEqual(router.predict_action(np.zeros(2), {"network_risk": 0.9}), 7)
 
     def test_failed_agents_are_surfaced_and_hybrid_fallback_is_observable(self) -> None:
         router = self.make_router()
         router.hf_agent = _FakeAgent(7, error=RuntimeError("provider down"))
-        router.switch_agent("hf_llm_agent")
+        router.hf_agent.source_id = QWEN_RL_SOURCE_ID
+        router.switch_agent(QWEN_RL_AGENT)
         with self.assertRaises(RuntimeError):
             router.predict_action(np.zeros(2), {"network_risk": 0.9})
 
-        router.switch_agent("hybrid")
+        router.switch_agent(HYBRID_AGENT)
         self.assertEqual(router.predict_action(np.zeros(2), {"network_risk": 0.9}), 3)
         self.assertIn("HF prediction failed", router.last_fallback_reason or "")
 
@@ -250,7 +254,7 @@ class PPOArtifactSmokeTests(unittest.TestCase):
         if not model_path.exists():
             self.skipTest(f"PPO checkpoint is not present at {model_path}")
 
-        agent = PPOAgent(str(model_path))
+        agent = PPOAgent(str(model_path), artifact_id="historical_ppo")
         env = CySentSecurityEnv(max_steps=20, seed=42)
         obs, _ = env.reset(seed=42)
         self.assertEqual(agent.model.observation_space.shape, env.observation_space.shape)

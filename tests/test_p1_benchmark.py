@@ -130,7 +130,7 @@ class BenchmarkCorrectnessTests(unittest.TestCase):
             completed_count=0,
             failure_count=0,
         )
-        self.assertEqual(metadata["ppo"]["agent_id"], "ppo_existing_checkpoint")
+        self.assertEqual(metadata["ppo"]["agent_id"], "ppo_historical_checkpoint")
         self.assertEqual(metadata["ppo"]["sha256"], expected_hash)
         self.assertFalse(metadata["ppo"]["committed"])
 

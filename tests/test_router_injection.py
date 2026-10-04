@@ -6,6 +6,7 @@ from unittest.mock import patch
 import numpy as np
 
 from backend.agents.qwen_rl_policy import QWEN_RL_SOURCE_ID
+from backend.agents.identities import HISTORICAL_PPO_AGENT
 from backend.agents.router import AgentRouter
 
 
@@ -59,10 +60,13 @@ class AgentRouterInjectionTests(unittest.TestCase):
         with patch("backend.agents.router.PPOAgent", return_value=ppo) as ppo_class, patch(
             "backend.agents.router.HFAgent", return_value=hf
         ) as hf_class:
-            router = AgentRouter(config={"default_agent": "ppo_agent", "mode": "hybrid"})
+            router = AgentRouter(config={
+                "default_agent": "ppo_agent", "mode": "hybrid", "hf_policy_mode": "generative_legacy",
+                "hf_timeout": 10.0,
+            })
 
-        ppo_class.assert_called_once_with()
-        hf_class.assert_called_once()
+        ppo_class.assert_called_once_with(None, artifact_id="historical_ppo", device="cpu")
+        hf_class.assert_called_once_with(adapter_path=None, timeout=10.0)
         self.assertIs(router.ppo_agent, ppo)
         self.assertIs(router.hf_agent, hf)
 
@@ -85,7 +89,7 @@ class AgentRouterInjectionTests(unittest.TestCase):
 
         router.reset_episode(42)
         self.assertEqual(router.predict_action(observation, low_state), 3)
-        self.assertEqual(router.last_used_agent, "ppo_agent")
+        self.assertEqual(router.last_used_agent, HISTORICAL_PPO_AGENT)
         for _ in range(8):
             router.predict_action(observation, low_state)
         self.assertEqual(router.predict_action(observation, low_state), 7)
@@ -104,7 +108,7 @@ class AgentRouterInjectionTests(unittest.TestCase):
         )
         fallback_router.reset_episode(44)
         self.assertEqual(fallback_router.predict_action(observation, {"network_risk": 0.8}), 3)
-        self.assertEqual(fallback_router.last_used_agent, "ppo_agent")
+        self.assertEqual(fallback_router.last_used_agent, HISTORICAL_PPO_AGENT)
         self.assertIn("HF prediction failed", fallback_router.last_fallback_reason or "")
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from contextlib import nullcontext
 import hashlib
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 try:
@@ -11,6 +12,7 @@ except ImportError:  # pragma: no cover - Qwen RL requires torch at runtime
     torch = None
 
 from backend.agents.hf_agent import HFAgent
+from backend.artifacts import ArtifactVerificationError, verify_qwen_snapshot
 from backend.env.security_env import ACTION_NAMES
 
 
@@ -111,12 +113,27 @@ class QwenRLPolicyAgent(HFAgent):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         if torch is None:
             raise ImportError("torch is required for the Qwen RL constrained policy.")
+        kwargs.setdefault("allow_cloud", False)
         super().__init__(*args, **kwargs)
         self._sampling_generator = torch.Generator(device="cpu")
         self._episode_seed = 0
         self._sampling_generator.manual_seed(self._episode_seed)
         self._action_token_ids: Optional[List[int]] = None
         self.last_decision: Optional[Dict[str, Any]] = None
+
+    def is_available(self) -> bool:
+        """Expose canonical readiness only for the frozen immutable HF snapshot."""
+        if self.client is not None:
+            return False
+        if not self.adapter_path:
+            return False
+        try:
+            verify_qwen_snapshot(Path(self.adapter_path))
+        except ArtifactVerificationError:
+            return False
+        if self._using_local_model:
+            return self.model is not None and self.tokenizer is not None
+        return True
 
     def reset(self, seed: Optional[int] = None) -> None:
         self._episode_seed = int(seed if seed is not None else 0)
@@ -139,6 +156,8 @@ class QwenRLPolicyAgent(HFAgent):
         if self.client is not None:
             raise RuntimeError("Qwen RL constrained policy requires a local model; hosted generation is unsupported.")
         if not self._using_local_model:
+            if not self.is_available():
+                raise RuntimeError("Qwen RL frozen local artifact provenance is unverified or unavailable.")
             if self._local_load_attempted:
                 raise RuntimeError("Qwen RL local model initialization previously failed.")
             self._local_load_attempted = True

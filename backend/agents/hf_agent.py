@@ -112,6 +112,8 @@ def _clean_env_value(value: Optional[str]) -> Optional[str]:
 class HFAgent:
     """HuggingFace LLM agent for action decision making."""
 
+    source_id = "hf_generative_legacy"
+
     def __init__(
         self,
         model_id: Optional[str] = None,
@@ -120,6 +122,7 @@ class HFAgent:
         token: Optional[str] = None,
         timeout: Optional[float] = None,
         max_retries: int = 2,
+        allow_cloud: bool = True,
     ) -> None:
         self.model_id = model_id or os.getenv("HF_MODEL_ID", "Qwen/Qwen2.5-3B-Instruct")
         self.merged_model_id = _clean_env_value(os.getenv("HF_MERGED_MODEL_ID"))
@@ -129,11 +132,12 @@ class HFAgent:
             if env_adapter_path is not None and env_adapter_path.strip():
                 resolved_adapter_path = env_adapter_path
             else:
-                resolved_adapter_path = "sxchin01/CySent-Qwen-RL"
+                resolved_adapter_path = ""
         self.adapter_path = str(resolved_adapter_path).strip()
         self.endpoint_url = _clean_env_value(endpoint_url) or _clean_env_value(os.getenv("HF_ENDPOINT_URL"))
+        self.allow_cloud = bool(allow_cloud)
         self.token_source = "HF_TOKEN"
-        self.token = self._resolve_canonical_token(token)
+        self.token = self._resolve_canonical_token(token) if self.allow_cloud else _clean_env_value(token)
         if timeout is None:
             timeout = float(os.getenv("HF_TIMEOUT", "10.0"))
         self.timeout = float(timeout)
@@ -151,7 +155,8 @@ class HFAgent:
         self._token_validity_checked = False
         self._token_is_valid = False
         print(f"[HFAgent] HF token detected={bool(self.token)} source={self.token_source}")
-        self._validate_token_once_at_startup()
+        if self.allow_cloud:
+            self._validate_token_once_at_startup()
         self._initialize_client()
 
     def _resolve_canonical_token(self, explicit_token: Optional[str]) -> Optional[str]:
@@ -265,6 +270,15 @@ class HFAgent:
 
     def _initialize_client(self) -> None:
         """Initialize with precedence: hosted (if configured) -> local adapter -> unavailable."""
+        if not self.allow_cloud:
+            if self.adapter_path and _looks_like_local_path(self.adapter_path):
+                if AutoModelForCausalLM is None or AutoTokenizer is None:
+                    raise ImportError("transformers is required for local HF adapter usage.")
+                self._active_backend = "local_deferred"
+                print(f"[HFAgent] Deferred local adapter load. adapter={self.adapter_path}")
+                return
+            raise RuntimeError("Local HF model is not configured: set HF_ADAPTER_PATH to a local model directory.")
+
         hosted_configured = bool(str(self.endpoint_url or "").strip())
         if hosted_configured:
             if InferenceClient is None:
@@ -482,23 +496,6 @@ Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
                     print("[HFAgent] Falling back to default provider selection for hosted inference.")
                     continue
 
-                # Some environments provide an invalid/expired HF token while using a public model.
-                # Retry once anonymously for hosted-model mode before failing.
-                if (
-                    not self._tried_anonymous_cloud
-                    and self.token
-                    and self.endpoint_url is None
-                    and InferenceClient is not None
-                ):
-                    self._tried_anonymous_cloud = True
-                    try:
-                        self.client = self._create_hosted_model_client(token=None)
-                        self._active_backend = "cloud"
-                        print("[HFAgent] Cloud call failed with token; retrying anonymously for public model access.")
-                        continue
-                    except Exception:
-                        pass
-
                 if "401" in msg or "Unauthorized" in msg or "Invalid username or password" in msg:
                     raise RuntimeError(
                         "HF authentication failed (401 Unauthorized). "
@@ -614,4 +611,4 @@ Respond with ONLY one action name from this exact list: {ACTION_LIST}."""
             return "Colab LLM Defender"
         if self.client is not None:
             return "HF Cloud Defender"
-        return "HF LLM Defender"
+        return "Legacy Generative HF Defender"

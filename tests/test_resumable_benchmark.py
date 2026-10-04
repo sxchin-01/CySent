@@ -179,8 +179,8 @@ class ResumableBenchmarkTests(unittest.TestCase):
             last_qwen_diagnostics = {"policy_mode": "historical_first_token_seeded_categorical_v1"}
             decisions = iter([
                 (0, "qwen_rl_policy", None),
-                (0, "ppo_agent", None),
-                (0, "ppo_agent", "HF prediction failed (RuntimeError); used PPO fallback."),
+                (0, benchmark.PPO_AGENT, None),
+                (0, benchmark.PPO_AGENT, "HF prediction failed (RuntimeError); used PPO fallback."),
             ])
 
             def reset_episode(self, agent, seed):
@@ -197,7 +197,7 @@ class ResumableBenchmarkTests(unittest.TestCase):
         self.assertEqual(row.ppo_fallbacks, 1)
         self.assertEqual(row.fallback_count, 1)
         self.assertEqual(len(json.loads(row.fallback_reasons)), 1)
-        self.assertEqual(json.loads(row.underlying_agents), ["qwen_rl_policy", "ppo_agent", "ppo_agent"])
+        self.assertEqual(json.loads(row.underlying_agents), ["qwen_rl_policy", benchmark.PPO_AGENT, benchmark.PPO_AGENT])
         self.assertEqual(len(json.loads(row.qwen_rl_diagnostics)), 1)
 
     def test_frozen_p1_p2_evidence_is_not_modified(self) -> None:

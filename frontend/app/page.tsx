@@ -34,8 +34,8 @@ export default function HomePage() {
   const [difficulty, setDifficulty] = useState("hard");
   const [attacker, setAttacker] = useState("ransomware_gang");
   const [strategyMode, setStrategyMode] = useState<StrategyMode>("balanced");
-  const [actionSource, setActionSource] = useState<ActionSource>("ppo_agent");
-  const [activeAgentLabel, setActiveAgentLabel] = useState("PPO Defender");
+  const [actionSource, setActionSource] = useState<ActionSource>("ppo_historical_checkpoint");
+  const [activeAgentLabel, setActiveAgentLabel] = useState("Historical PPO Defender");
 
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -118,7 +118,7 @@ export default function HomePage() {
       };
       stateRef.current = resolvedState;
       setState(resolvedState);
-      setActiveAgentLabel(result.active_agent ?? AGENT_LABELS[actionSource] ?? "PPO Defender");
+      setActiveAgentLabel(result.active_agent ?? AGENT_LABELS[actionSource] ?? "Historical PPO Defender");
       setIncidents((p) => [incidentLine(resolvedState, result), ...p].slice(0, 50));
       setTimeline((p) => [...p, {
         turn: resolvedState.step, reward: result.reward, risk: result.network_risk,
@@ -147,7 +147,7 @@ export default function HomePage() {
       setState(synced); stateRef.current = synced; setIncidents([]);
       setTimeline([{ turn: synced.step, reward: 0, risk: synced.network_risk, uptime: uptimeFromAssets(synced.assets), breaches: breachesFromAssets(synced.assets), securityScore: securityScore(synced.network_risk) }]);
       setFrames([]); setReplayIndex(0);
-      setActiveAgentLabel(AGENT_LABELS[actionSource] ?? "PPO Defender");
+      setActiveAgentLabel(AGENT_LABELS[actionSource] ?? "Historical PPO Defender");
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Reset request failed.");
       if (err instanceof Error && isBackendReachabilityError(err)) {
@@ -167,7 +167,7 @@ export default function HomePage() {
       setState(synced); stateRef.current = synced; setIncidents([]);
       setTimeline([{ turn: synced.step, reward: 0, risk: synced.network_risk, uptime: uptimeFromAssets(synced.assets), breaches: breachesFromAssets(synced.assets), securityScore: securityScore(synced.network_risk) }]);
       setFrames([]); setReplayIndex(0);
-      setActiveAgentLabel(AGENT_LABELS[actionSource] ?? "PPO Defender");
+      setActiveAgentLabel(AGENT_LABELS[actionSource] ?? "Historical PPO Defender");
       setRunning(true);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Unable to start simulation.");
@@ -365,8 +365,8 @@ function isBackendReachabilityError(err: Error): boolean {
 }
 
 const AGENT_LABELS: Record<string, string> = {
-  ppo_agent: "PPO Defender",
-  hf_llm_agent: "HF LLM Defender",
-  hybrid: "Hybrid Defender",
+  ppo_historical_checkpoint: "Historical PPO Defender",
+  qwen_rl: "Qwen RL Constrained Policy",
+  hybrid_router: "PPO/Qwen Hybrid Router",
   random: "Random Baseline",
 };

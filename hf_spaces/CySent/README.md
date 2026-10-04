@@ -1,3 +1,7 @@
+> **Deprecated:** This standalone Gradio prototype is not the CySent v1
+> environment, canonical agent registry, or authoritative benchmark. Use the
+> repository root and `docs/v1-run.md` for the v1 research/demo path.
+
 ---
 title: CySent
 emoji: 🛡️

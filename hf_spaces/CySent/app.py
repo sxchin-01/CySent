@@ -3,6 +3,7 @@ CySent — Autonomous Cyber Defense Command Center
 Premium dark UI with Gradio Blocks + custom CSS.
 """
 
+# DEPRECATED: historical standalone prototype, not the CySent v1 research runtime.
 import os
 import gradio as gr
 import torch
