@@ -4,8 +4,10 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -111,6 +113,11 @@ class EpisodeResult:
     requested_actions: str
     executed_actions: str
     underlying_agents: str
+    qwen_decisions: int = 0
+    ordinary_ppo_decisions: int = 0
+    qwen_failures: int = 0
+    ppo_fallbacks: int = 0
+    fallback_reasons: str = "[]"
 
 
 @dataclass
@@ -120,6 +127,7 @@ class FailureResult:
     seed: int
     error_type: str
     error: str
+    attempt_utc: str = ""
 
 
 def _parse_agents(raw: str) -> List[str]:
@@ -272,6 +280,7 @@ def run_episode(*, agent: str, episode_index: int, case: ExperimentCase, max_ste
     requested: List[str] = []
     executed: List[str] = []
     underlying: List[str] = []
+    fallback_reasons: List[str] = []
     attempted_attacks = 0
     action_cost = 0.0
     substitutions = repeats = fallbacks = 0
@@ -288,6 +297,8 @@ def run_episode(*, agent: str, episode_index: int, case: ExperimentCase, max_ste
         requested.append(requested_name)
         underlying.append(underlying_agent)
         fallbacks += int(bool(fallback_reason))
+        if fallback_reason:
+            fallback_reasons.append(fallback_reason)
 
         obs, reward, terminated, truncated, info = env.step(action)
         executed_name = str(info.get("last_action", requested_name))
@@ -342,6 +353,12 @@ def run_episode(*, agent: str, episode_index: int, case: ExperimentCase, max_ste
         requested_actions=json.dumps(requested, separators=(",", ":")),
         executed_actions=json.dumps(executed, separators=(",", ":")),
         underlying_agents=json.dumps(underlying, separators=(",", ":")),
+        qwen_decisions=sum(source == "hf_llm_agent" for source in underlying),
+        ordinary_ppo_decisions=max(sum(source == "ppo_agent" for source in underlying) - fallbacks, 0)
+        if agent == "hybrid_router" else 0,
+        qwen_failures=fallbacks if agent == "hybrid_router" else 0,
+        ppo_fallbacks=fallbacks if agent == "hybrid_router" else 0,
+        fallback_reasons=json.dumps(fallback_reasons, separators=(",", ":")),
     )
 
 
@@ -379,13 +396,79 @@ def _action_distribution(rows: Sequence[EpisodeResult]) -> List[Dict[str, Any]]:
     return output
 
 
-def _write_csv(path: Path, rows: Iterable[Dict[str, Any]], fieldnames: Sequence[str]) -> None:
+def _atomic_write(path: Path, writer: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({name: row.get(name) for name in fieldnames})
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as handle:
+            writer(handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _write_text(path: Path, value: str) -> None:
+    _atomic_write(path, lambda handle: handle.write(value))
+
+
+def _write_json(path: Path, value: Dict[str, Any]) -> None:
+    _write_text(path, json.dumps(value, indent=2) + "\n")
+
+
+def _write_csv(path: Path, rows: Iterable[Dict[str, Any]], fieldnames: Sequence[str]) -> None:
+    materialized = list(rows)
+
+    def write(handle: Any) -> None:
+        csv_writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        csv_writer.writeheader()
+        for row in materialized:
+            csv_writer.writerow({name: row.get(name) for name in fieldnames})
+
+    _atomic_write(path, write)
+
+
+def _read_episode_rows(path: Path) -> List[EpisodeResult]:
+    if not path.exists():
+        return []
+    integer_fields = {
+        "episode_index", "seed", "successful_attacks", "prevented_attacks", "attempted_attacks",
+        "compromised_assets", "critical_compromised_assets", "substituted_actions", "repeated_actions",
+        "survival_turns", "fallback_count", "qwen_decisions", "ordinary_ppo_decisions", "qwen_failures",
+        "ppo_fallbacks",
+    }
+    float_fields = {
+        "total_reward", "breach_rate", "prevention_rate", "mean_network_risk", "final_network_risk",
+        "peak_network_risk", "mean_uptime", "final_uptime", "mean_downtime", "action_cost",
+        "substitution_rate", "repeated_action_rate", "decision_latency_ms",
+    }
+    boolean_fields = {"terminated", "truncated"}
+    defaults = {name: field.default for name, field in EpisodeResult.__dataclass_fields__.items()}
+    rows: List[EpisodeResult] = []
+    with path.open(newline="", encoding="utf-8") as handle:
+        for raw in csv.DictReader(handle):
+            values: Dict[str, Any] = {}
+            for name in EpisodeResult.__dataclass_fields__:
+                value: Any = raw.get(name, defaults.get(name))
+                if name in integer_fields:
+                    value = int(value)
+                elif name in float_fields:
+                    value = float(value)
+                elif name in boolean_fields:
+                    value = str(value).lower() == "true"
+                values[name] = value
+            rows.append(EpisodeResult(**values))
+    return rows
+
+
+def _read_failure_rows(path: Path) -> List[FailureResult]:
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8") as handle:
+        return [FailureResult(**{name: raw.get(name, "") for name in FailureResult.__dataclass_fields__}) for raw in csv.DictReader(handle)]
 
 
 def _write_plots(path: Path, summaries: Sequence[Dict[str, Any]]) -> None:
@@ -410,8 +493,16 @@ def _write_plots(path: Path, summaries: Sequence[Dict[str, Any]]) -> None:
         if limits:
             axis.set_ylim(*limits)
     fig.tight_layout()
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        fig.savefig(temp_path, dpi=150, format="png")
+        os.replace(temp_path, path)
+    finally:
+        plt.close(fig)
+        temp_path.unlink(missing_ok=True)
 
 
 def _fmt(row: Dict[str, Any], metric: str) -> str:
@@ -485,10 +576,35 @@ def _write_report(path: Path, metadata: Dict[str, Any], summaries: Sequence[Dict
         "- Population standard deviation is reported over this fixed benchmark matrix; the sample is not a claim of broad external validity.",
         "- Wasteful-action count is not reported because the environment does not expose that reward-internal classification reliably.",
     ])
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _write_text(path, "\n".join(lines) + "\n")
 
 
-def build_metadata(*, agents: Sequence[str], seeds: Sequence[int], plan: Sequence[ExperimentCase], ppo_path: Path, max_steps: int, completed_count: int, failure_count: int, fresh_ppo_path: Optional[Path] = None) -> Dict[str, Any]:
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(PROJECT_ROOT.resolve()))
+    except ValueError:
+        return str(path.resolve())
+
+
+def _normalize_model_metadata(raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if raw is None:
+        return None
+    allowed = (
+        "model_id", "requested_revision", "resolved_revision", "dtype", "quantization", "device",
+        "gpu_name", "cuda_version", "python_version", "torch_version", "numpy_version",
+        "transformers_version", "accelerate_version", "huggingface_hub_version", "stable_baselines3_version",
+    )
+    normalized = {name: raw[name] for name in allowed if name in raw}
+    for name, value in normalized.items():
+        if not isinstance(value, (str, int, float, bool, type(None), list, dict)):
+            raise ValueError(f"Model metadata field {name!r} is not JSON compatible.")
+    revision = str(normalized.get("resolved_revision", ""))
+    if revision and (len(revision) != 40 or any(character not in "0123456789abcdefABCDEF" for character in revision)):
+        raise ValueError("resolved_revision must be an immutable 40-character Hugging Face commit SHA.")
+    return normalized
+
+
+def build_metadata(*, agents: Sequence[str], seeds: Sequence[int], plan: Sequence[ExperimentCase], ppo_path: Path, max_steps: int, completed_count: int, failure_count: int, fresh_ppo_path: Optional[Path] = None, model_metadata: Optional[Dict[str, Any]] = None, resumable: bool = False) -> Dict[str, Any]:
     dirty_output = _git("status", "--short")
     source_paths = [
         PROJECT_ROOT / "backend/env/security_env.py",
@@ -496,11 +612,13 @@ def build_metadata(*, agents: Sequence[str], seeds: Sequence[int], plan: Sequenc
         PROJECT_ROOT / "backend/env/threat_engine.py",
         PROJECT_ROOT / "backend/agents/random_agent.py",
         PROJECT_ROOT / "backend/agents/heuristic_agent.py",
+        PROJECT_ROOT / "backend/agents/hf_agent.py",
+        PROJECT_ROOT / "backend/agents/router.py",
         PROJECT_ROOT / "backend/train/benchmark_agents.py",
         PROJECT_ROOT / "configs/v1_locked.yaml",
     ]
     return {
-        "schema_version": 1,
+        "schema_version": 2 if resumable else 1,
         "run_utc": datetime.now(timezone.utc).isoformat(),
         "git": {
             "commit": _git("rev-parse", "HEAD"),
@@ -524,26 +642,66 @@ def build_metadata(*, agents: Sequence[str], seeds: Sequence[int], plan: Sequenc
         "ppo": {
             "label": "Existing/Historical PPO Checkpoint",
             "agent_id": PPO_AGENT,
-            "path": str(ppo_path.relative_to(PROJECT_ROOT)),
+            "path": _display_path(ppo_path),
             "sha256": _sha256(ppo_path),
-            "committed": bool(_git("ls-files", str(ppo_path.relative_to(PROJECT_ROOT)))),
+            "committed": bool(_git("ls-files", _display_path(ppo_path))),
             "vecnormalize_required": False,
             "provenance": "Incomplete; compatibility verified, exact P0-corrected training source not claimed.",
         },
         "fresh_ppo": {
             "label": "Fresh PPO Primary Best Checkpoint",
             "agent_id": FRESH_PPO_AGENT,
-            "path": str(fresh_ppo_path.relative_to(PROJECT_ROOT)),
+            "path": _display_path(fresh_ppo_path),
             "sha256": _sha256(fresh_ppo_path),
-            "committed": bool(_git("ls-files", str(fresh_ppo_path.relative_to(PROJECT_ROOT)))),
+            "committed": bool(_git("ls-files", _display_path(fresh_ppo_path))),
         } if fresh_ppo_path is not None else None,
+        "qwen_model": _normalize_model_metadata(model_metadata),
+        "status": "incomplete" if resumable else (
+            "complete" if completed_count == len(agents) * len(plan) else "failed"
+        ),
         "metric_definitions": METRIC_DEFINITIONS,
         "aggregation": "Arithmetic mean and population standard deviation across completed episodes; no outlier removal.",
         "historical_results_included": False,
     }
 
 
-def run_benchmark(*, agents: Sequence[str], seeds: Sequence[int], outdir: Path, max_steps: int = 150, matrix: Sequence[Dict[str, str]] = DEFAULT_MATRIX, ppo_path: Path = DEFAULT_PPO_PATH, fresh_ppo_path: Optional[Path] = None) -> Dict[str, Any]:
+def _resume_contract(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "schema_version": metadata["schema_version"],
+        "git_commit": metadata["git"]["commit"],
+        "agents": metadata["agents"],
+        "seeds": metadata["seeds"],
+        "max_steps": metadata["max_steps"],
+        "matrix": metadata["matrix"],
+        "source_sha256": metadata["environment"]["source_sha256"],
+        "ppo": {key: metadata["ppo"][key] for key in ("agent_id", "path", "sha256")},
+        "fresh_ppo": metadata["fresh_ppo"],
+        "qwen_model": metadata["qwen_model"],
+    }
+
+
+def _contract_digest(contract: Dict[str, Any]) -> str:
+    payload = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest().upper()
+
+
+def _episode_key(agent: str, case_id: str, seed: int) -> Tuple[str, str, int]:
+    return agent, case_id, int(seed)
+
+
+def _persist_progress(outdir: Path, rows: Sequence[EpisodeResult], failures: Sequence[FailureResult], metadata: Dict[str, Any]) -> None:
+    completed = len(rows)
+    expected = int(metadata["expected_episode_count"])
+    metadata["completed_episode_count"] = completed
+    metadata["failure_count"] = len(failures)
+    metadata["status"] = "complete" if completed == expected else "incomplete"
+    metadata["updated_utc"] = datetime.now(timezone.utc).isoformat()
+    _write_csv(outdir / "episodes.csv", (asdict(row) for row in rows), list(EpisodeResult.__dataclass_fields__))
+    _write_csv(outdir / "failures.csv", (asdict(row) for row in failures), list(FailureResult.__dataclass_fields__))
+    _write_json(outdir / "metadata.json", metadata)
+
+
+def run_benchmark(*, agents: Sequence[str], seeds: Sequence[int], outdir: Path, max_steps: int = 150, matrix: Sequence[Dict[str, str]] = DEFAULT_MATRIX, ppo_path: Path = DEFAULT_PPO_PATH, fresh_ppo_path: Optional[Path] = None, resume: bool = False, model_metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     agents = list(agents)
     seeds = list(seeds)
     plan = build_experiment_plan(seeds, matrix)
@@ -551,42 +709,104 @@ def run_benchmark(*, agents: Sequence[str], seeds: Sequence[int], outdir: Path, 
         raise FileNotFoundError(f"Historical PPO checkpoint not found: {ppo_path}")
     if FRESH_PPO_AGENT in agents and (fresh_ppo_path is None or not fresh_ppo_path.exists()):
         raise FileNotFoundError(f"Fresh PPO checkpoint not found: {fresh_ppo_path}")
-    policies = PolicySet(agents, ppo_path, fresh_ppo_path)
+    qwen_requested = bool({"qwen_rl", "hybrid_router"}.intersection(agents))
+    normalized_model_metadata = _normalize_model_metadata(model_metadata)
+    if resume and qwen_requested:
+        required = {"model_id", "resolved_revision", "dtype", "quantization", "device"}
+        missing = sorted(required.difference(normalized_model_metadata or {}))
+        if missing:
+            raise ValueError(f"Resumable Qwen/Hybrid runs require model metadata fields: {', '.join(missing)}")
+
+    outdir = outdir if outdir.is_absolute() else PROJECT_ROOT / outdir
     rows: List[EpisodeResult] = []
     failures: List[FailureResult] = []
+    metadata: Optional[Dict[str, Any]] = None
+    if resume:
+        outdir.mkdir(parents=True, exist_ok=True)
+        candidate = build_metadata(
+            agents=agents,
+            seeds=seeds,
+            plan=plan,
+            ppo_path=ppo_path,
+            max_steps=max_steps,
+            completed_count=0,
+            failure_count=0,
+            fresh_ppo_path=fresh_ppo_path if FRESH_PPO_AGENT in agents else None,
+            model_metadata=normalized_model_metadata,
+            resumable=True,
+        )
+        contract = _resume_contract(candidate)
+        candidate["resume_contract"] = contract
+        candidate["resume_contract_sha256"] = _contract_digest(contract)
+        metadata_path = outdir / "metadata.json"
+        if metadata_path.exists():
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if metadata.get("resume_contract_sha256") != candidate["resume_contract_sha256"] or metadata.get("resume_contract") != contract:
+                raise RuntimeError("Refusing incompatible resume: benchmark configuration, model revision, checkpoint, commit, or source hashes changed.")
+            rows = _read_episode_rows(outdir / "episodes.csv")
+            failures = _read_failure_rows(outdir / "failures.csv")
+        else:
+            existing = [path for path in outdir.iterdir()]
+            if existing:
+                raise FileExistsError(f"Refusing to overwrite non-resumable output directory: {outdir}")
+            metadata = candidate
+        completed_keys = [_episode_key(row.agent, row.case_id, row.seed) for row in rows]
+        if len(completed_keys) != len(set(completed_keys)):
+            raise RuntimeError("Refusing resume because episodes.csv contains duplicate completed episode keys.")
+        _persist_progress(outdir, rows, failures, metadata)
+
+    policies = PolicySet(agents, ppo_path, fresh_ppo_path)
+    completed = {_episode_key(row.agent, row.case_id, row.seed) for row in rows}
     for agent in agents:
         for episode_index, case in enumerate(plan):
+            key = _episode_key(agent, case.case_id, case.seed)
+            if key in completed:
+                continue
             try:
-                rows.append(run_episode(agent=agent, episode_index=episode_index, case=case, max_steps=max_steps, policies=policies))
+                row = run_episode(agent=agent, episode_index=episode_index, case=case, max_steps=max_steps, policies=policies)
+                if _episode_key(row.agent, row.case_id, row.seed) != key:
+                    raise RuntimeError("Episode result identity does not match the requested agent/case/seed key.")
+                rows.append(row)
+                completed.add(key)
             except Exception as exc:
-                failures.append(FailureResult(agent=agent, case_id=case.case_id, seed=case.seed, error_type=type(exc).__name__, error=str(exc)))
+                failures.append(FailureResult(
+                    agent=agent,
+                    case_id=case.case_id,
+                    seed=case.seed,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                    attempt_utc=datetime.now(timezone.utc).isoformat(),
+                ))
+            finally:
+                if resume and metadata is not None:
+                    _persist_progress(outdir, rows, failures, metadata)
 
     summaries = aggregate_results(rows)
-    outdir = outdir if outdir.is_absolute() else PROJECT_ROOT / outdir
     outdir.mkdir(parents=True, exist_ok=True)
-    metadata = build_metadata(
-        agents=agents,
-        seeds=seeds,
-        plan=plan,
-        ppo_path=ppo_path,
-        max_steps=max_steps,
-        completed_count=len(rows),
-        failure_count=len(failures),
-        fresh_ppo_path=fresh_ppo_path if FRESH_PPO_AGENT in agents else None,
-    )
+    if metadata is None:
+        metadata = build_metadata(
+            agents=agents,
+            seeds=seeds,
+            plan=plan,
+            ppo_path=ppo_path,
+            max_steps=max_steps,
+            completed_count=len(rows),
+            failure_count=len(failures),
+            fresh_ppo_path=fresh_ppo_path if FRESH_PPO_AGENT in agents else None,
+            model_metadata=normalized_model_metadata,
+        )
     episode_fields = list(EpisodeResult.__dataclass_fields__)
     summary_fields = ["agent", "sample_count"] + [f"{metric}_{suffix}" for metric in AGGREGATE_METRICS for suffix in ("mean", "std")]
     _write_csv(outdir / "episodes.csv", (asdict(row) for row in rows), episode_fields)
     _write_csv(outdir / "summary.csv", summaries, summary_fields)
     _write_csv(outdir / "action_distribution.csv", _action_distribution(rows), ["agent", "action_kind", "action_id", "action_name", "count", "rate"])
     _write_csv(outdir / "failures.csv", (asdict(row) for row in failures), list(FailureResult.__dataclass_fields__))
-    (outdir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    _write_json(outdir / "metadata.json", metadata)
     _write_report(outdir / "report.md", metadata, summaries, failures, rows)
     if summaries:
         _write_plots(outdir / "comparison.png", summaries)
-    core_failures = [failure for failure in failures if failure.agent in CORE_AGENTS]
     return {
-        "status": "ok" if not core_failures and len(rows) == len(agents) * len(plan) else "failed",
+        "status": "ok" if len(rows) == len(agents) * len(plan) else "failed",
         "output_directory": str(outdir),
         "completed_episode_count": len(rows),
         "expected_episode_count": len(agents) * len(plan),
@@ -603,11 +823,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ppo-path", default=str(DEFAULT_PPO_PATH.relative_to(PROJECT_ROOT)))
     parser.add_argument("--fresh-ppo-path", default=str(DEFAULT_FRESH_PPO_PATH.relative_to(PROJECT_ROOT)))
     parser.add_argument("--outdir", default="outputs/benchmarks/p1_baseline_v2")
+    parser.add_argument("--resume", action="store_true", help="Persist each episode atomically and resume a compatible run.")
+    parser.add_argument("--model-metadata", help="JSON file with immutable local Qwen model/runtime identity.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    model_metadata = None
+    if args.model_metadata:
+        model_metadata = json.loads(Path(args.model_metadata).read_text(encoding="utf-8"))
     result = run_benchmark(
         agents=_parse_agents(args.agents),
         seeds=_parse_seeds(args.seeds),
@@ -615,6 +840,8 @@ def main() -> None:
         max_steps=int(args.max_steps),
         ppo_path=PROJECT_ROOT / args.ppo_path,
         fresh_ppo_path=PROJECT_ROOT / args.fresh_ppo_path,
+        resume=bool(args.resume),
+        model_metadata=model_metadata,
     )
     print(json.dumps(result, indent=2))
     if result["status"] != "ok":
