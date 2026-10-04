@@ -88,6 +88,13 @@ QWEN_RL_POLICY_CONTRACT = {
     "action_order": HISTORICAL_ACTION_LIST,
     "action_token_ids": EXPECTED_QWEN25_ACTION_TOKEN_IDS,
     "selection": "seeded categorical sample over 12 gathered first-token logits",
+    "numerics": {
+        "model_inference": "unchanged model dtype (FP16 on the verified T4 run)",
+        "raw_policy_scores": "model constrained logits in their original dtype",
+        "categorical_normalization": "softmax over the 12 constrained logits after conversion to float32",
+        "historical_training": "torch.distributions.Categorical(logits=action_logits)",
+        "reproduction_scope": "distribution-faithful; not bit-for-bit historical floating-point sampling",
+    },
     "rng": "agent-local CPU torch.Generator reset from benchmark episode seed",
     "conditional_probability_label": CONDITIONAL_PROBABILITY_LABEL,
     "collision_groups": collision_groups(EXPECTED_QWEN25_ACTION_TOKEN_IDS),
@@ -164,9 +171,16 @@ class QwenRLPolicyAgent(HFAgent):
         action_token_ids = self._validated_action_token_ids()
         gather_index = torch.tensor(action_token_ids, device=final_vocabulary_logits.device, dtype=torch.long)
         constrained_logits = final_vocabulary_logits[0, gather_index]
-        constrained_probabilities = torch.softmax(constrained_logits, dim=-1)
+        if constrained_logits.numel() != len(HISTORICAL_ACTION_LIST):
+            raise RuntimeError("Qwen RL constrained policy did not produce exactly 12 action logits.")
+        if not bool(torch.isfinite(constrained_logits).all()):
+            raise RuntimeError("Qwen RL constrained policy produced non-finite action logits.")
+        sampling_logits = constrained_logits.float()
+        constrained_probabilities = torch.softmax(sampling_logits, dim=-1)
+        if not bool(torch.isfinite(constrained_probabilities).all()):
+            raise RuntimeError("Qwen RL constrained policy produced non-finite action probabilities.")
 
-        cpu_probabilities = constrained_probabilities.detach().to(device="cpu", dtype=torch.float64)
+        cpu_probabilities = constrained_probabilities.detach().to(device="cpu")
         selected_action_id = int(torch.multinomial(
             cpu_probabilities,
             num_samples=1,
@@ -193,6 +207,8 @@ class QwenRLPolicyAgent(HFAgent):
             "action_token_ids": action_token_ids,
             "constrained_logits": logits,
             "constrained_probabilities": probabilities,
+            "raw_constrained_logits_dtype": str(constrained_logits.dtype),
+            "categorical_normalization_dtype": str(constrained_probabilities.dtype),
             "conditional_probability_label": CONDITIONAL_PROBABILITY_LABEL,
             "selected_action_constrained_probability": probabilities[selected_action_id],
             "top_action_ids": top_action_ids,

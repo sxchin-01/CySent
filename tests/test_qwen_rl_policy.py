@@ -45,19 +45,22 @@ class _Tokenizer:
 class _Model:
     device = torch.device("cpu")
 
-    def __init__(self, action_scores=None) -> None:
+    def __init__(self, action_scores=None, dtype=torch.float32) -> None:
         self.action_scores = action_scores or [0.0] * len(HISTORICAL_ACTION_LIST)
+        self.dtype = dtype
 
     def __call__(self, **kwargs):
-        logits = torch.full((1, 3, max(EXPECTED_QWEN25_ACTION_TOKEN_IDS) + 1), -100.0)
+        logits = torch.full(
+            (1, 3, max(EXPECTED_QWEN25_ACTION_TOKEN_IDS) + 1), -100.0, dtype=self.dtype,
+        )
         for token_id, score in zip(EXPECTED_QWEN25_ACTION_TOKEN_IDS, self.action_scores):
             logits[0, -1, token_id] = score
         return SimpleNamespace(logits=logits)
 
 
-def _policy(action_scores=None) -> QwenRLPolicyAgent:
+def _policy(action_scores=None, dtype=torch.float32) -> QwenRLPolicyAgent:
     agent = object.__new__(QwenRLPolicyAgent)
-    agent.model = _Model(action_scores)
+    agent.model = _Model(action_scores, dtype=dtype)
     agent.tokenizer = _Tokenizer()
     agent.adapter_path = "local"
     agent.client = None
@@ -95,6 +98,32 @@ class QwenRLContractTests(unittest.TestCase):
         self.assertAlmostEqual(sum(diagnostics["constrained_probabilities"]), 1.0, places=6)
         self.assertEqual(diagnostics["conditional_probability_label"], CONDITIONAL_PROBABILITY_LABEL)
         self.assertEqual(diagnostics["top_action_ids"], [1, 2, 3])
+
+    def test_fp16_logits_are_normalized_in_fp32_without_small_probability_underflow(self) -> None:
+        scores = [
+            7.19140625, 22.28125, 22.28125, 22.28125, 0.86572265625, 0.381591796875,
+            -6.1328125, -3.7734375, 3.3359375, -2.9375, -1.4931640625, 4.88671875,
+        ]
+        agent = _policy(scores, dtype=torch.float16)
+        global_before = torch.random.get_rng_state().clone()
+        agent.reset(42)
+
+        agent._predict_action_impl(self._state())
+        diagnostics = agent.last_decision
+        probabilities = diagnostics["constrained_probabilities"]
+
+        self.assertEqual(len(probabilities), 12)
+        self.assertTrue(all(torch.isfinite(torch.tensor(probabilities))))
+        self.assertAlmostEqual(sum(probabilities), 1.0, places=6)
+        self.assertEqual(probabilities[1], probabilities[2])
+        self.assertEqual(probabilities[2], probabilities[3])
+        self.assertGreater(probabilities[6], 0.0)
+        self.assertGreater(probabilities[7], 0.0)
+        self.assertEqual(diagnostics["raw_constrained_logits_dtype"], "torch.float16")
+        self.assertEqual(diagnostics["categorical_normalization_dtype"], "torch.float32")
+        self.assertEqual(diagnostics["policy_mode"], QWEN_RL_POLICY_MODE)
+        self.assertEqual(diagnostics["source"], QWEN_RL_SOURCE_ID)
+        self.assertTrue(torch.equal(global_before, torch.random.get_rng_state()))
 
     def test_seeded_sampling_reproduces_sequences_without_global_rng_use(self) -> None:
         agent = _policy()
