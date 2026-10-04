@@ -11,21 +11,30 @@ from backend.agents.random_agent import RandomAgent
 
 
 VALID_AGENT_NAMES = {"ppo_agent", "hf_llm_agent", "hybrid", "random", "random_agent"}
+_AGENT_NOT_PROVIDED = object()
 
 
 class AgentRouter:
     """Router for managing PPO and HF LLM agents with fallback logic."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        *,
+        ppo_agent: Any = _AGENT_NOT_PROVIDED,
+        hf_agent: Any = _AGENT_NOT_PROVIDED,
+    ) -> None:
         self.config = config or self._load_config()
         self.default_agent = self.config.get("default_agent", "ppo_agent")
         self.mode = str(self.config.get("mode", os.getenv("AGENT_MODE", "hybrid"))).lower()
 
         # Initialize agents
-        self.ppo_agent: Optional[PPOAgent] = None
-        self.hf_agent: Optional[HFAgent] = None
+        initialize_ppo = ppo_agent is _AGENT_NOT_PROVIDED
+        initialize_hf = hf_agent is _AGENT_NOT_PROVIDED
+        self.ppo_agent: Optional[PPOAgent] = None if initialize_ppo else ppo_agent
+        self.hf_agent: Optional[HFAgent] = None if initialize_hf else hf_agent
         self.random_agent: RandomAgent = RandomAgent()
-        self._initialize_agents()
+        self._initialize_agents(initialize_ppo=initialize_ppo, initialize_hf=initialize_hf)
 
         # Credit saving modes
         self.full_llm = bool(self.config.get("full_llm", False))
@@ -46,21 +55,23 @@ class AgentRouter:
             pass
         return {}
 
-    def _initialize_agents(self) -> None:
+    def _initialize_agents(self, *, initialize_ppo: bool = True, initialize_hf: bool = True) -> None:
         """Initialize available agents."""
-        try:
-            self.ppo_agent = PPOAgent()
-        except Exception:
-            self.ppo_agent = None
-            print("[AgentRouter] PPO unavailable at startup.")
+        if initialize_ppo:
+            try:
+                self.ppo_agent = PPOAgent()
+            except Exception:
+                self.ppo_agent = None
+                print("[AgentRouter] PPO unavailable at startup.")
 
-        try:
-            hf_agent_class = QwenRLPolicyAgent if self.config.get("hf_policy_mode") == "qwen_rl" else HFAgent
-            self.hf_agent = hf_agent_class(timeout=float(self.config.get("hf_timeout", os.getenv("HF_TIMEOUT", 10.0))))
-        except Exception as exc:
-            self.hf_agent = None
-            print(f"[AgentRouter] HF unavailable at startup: {type(exc).__name__}: {exc}")
-            print("[AgentRouter] PPO remains default fallback.")
+        if initialize_hf:
+            try:
+                hf_agent_class = QwenRLPolicyAgent if self.config.get("hf_policy_mode") == "qwen_rl" else HFAgent
+                self.hf_agent = hf_agent_class(timeout=float(self.config.get("hf_timeout", os.getenv("HF_TIMEOUT", 10.0))))
+            except Exception as exc:
+                self.hf_agent = None
+                print(f"[AgentRouter] HF unavailable at startup: {type(exc).__name__}: {exc}")
+                print("[AgentRouter] PPO remains default fallback.")
 
     def _should_use_hf(self, network_risk: float) -> bool:
         """Determine if HF should be used based on mode and risk."""
