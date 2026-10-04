@@ -27,7 +27,8 @@ from backend.agents.router import AgentRouter
 from backend.env.security_env import ACTION_NAMES, CySentSecurityEnv
 
 PPO_AGENT = "ppo_existing_checkpoint"
-CORE_AGENTS = {"random", "heuristic", PPO_AGENT}
+FRESH_PPO_AGENT = "ppo_fresh_checkpoint"
+CORE_AGENTS = {"random", "heuristic", PPO_AGENT, FRESH_PPO_AGENT}
 DEFAULT_AGENTS = ["random", "heuristic", PPO_AGENT]
 DEFAULT_SEEDS = [42, 43, 44]
 DEFAULT_MATRIX = [
@@ -36,6 +37,7 @@ DEFAULT_MATRIX = [
     {"scenario": "hospital", "difficulty": "medium", "attacker": "insider_saboteur"},
 ]
 DEFAULT_PPO_PATH = PROJECT_ROOT / "backend/train/artifacts/best_model/best_model.zip"
+DEFAULT_FRESH_PPO_PATH = PROJECT_ROOT / "backend/train/artifacts/p2_fresh_ppo/p2_fresh_primary_seed42/best_model/best_model.zip"
 
 METRIC_DEFINITIONS: Dict[str, Dict[str, str]] = {
     "total_reward": {"scope": "episode", "direction": "higher", "definition": "Sum of environment rewards across the episode."},
@@ -53,7 +55,9 @@ METRIC_DEFINITIONS: Dict[str, Dict[str, str]] = {
     "mean_downtime": {"scope": "episode", "direction": "lower", "definition": "One minus mean uptime."},
     "action_cost": {"scope": "episode", "direction": "lower", "definition": "Sum of action_cost reported by reward_breakdown."},
     "substituted_actions": {"scope": "episode", "direction": "lower", "definition": "Requested actions replaced by a different executed action due to environment constraints."},
+    "substitution_rate": {"scope": "episode", "direction": "lower", "definition": "Fraction of requested actions replaced by a different executed action."},
     "repeated_actions": {"scope": "episode", "direction": "lower", "definition": "Consecutive requested actions equal to the preceding requested action."},
+    "repeated_action_rate": {"scope": "episode", "direction": "lower", "definition": "Fraction of decisions after the first that repeat the preceding requested action."},
     "survival_turns": {"scope": "episode", "direction": "higher", "definition": "Number of transitions before termination or truncation."},
     "decision_latency_ms": {"scope": "episode", "direction": "lower", "definition": "Mean wall-clock policy decision latency per turn in milliseconds."},
     "fallback_count": {"scope": "episode", "direction": "lower", "definition": "Decisions where a router reported fallback to another agent."},
@@ -95,7 +99,9 @@ class EpisodeResult:
     mean_downtime: float
     action_cost: float
     substituted_actions: int
+    substitution_rate: float
     repeated_actions: int
+    repeated_action_rate: float
     survival_turns: int
     decision_latency_ms: float
     fallback_count: int
@@ -122,6 +128,8 @@ def _parse_agents(raw: str) -> List[str]:
         "heuristic": "heuristic",
         "ppo": PPO_AGENT,
         PPO_AGENT: PPO_AGENT,
+        "fresh_ppo": FRESH_PPO_AGENT,
+        FRESH_PPO_AGENT: FRESH_PPO_AGENT,
         "qwen": "qwen_rl",
         "qwen_rl": "qwen_rl",
         "hf": "qwen_rl",
@@ -196,10 +204,11 @@ def _agent_state(info: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class PolicySet:
-    def __init__(self, agents: Sequence[str], ppo_path: Path) -> None:
+    def __init__(self, agents: Sequence[str], ppo_path: Path, fresh_ppo_path: Optional[Path] = None) -> None:
         self.random = RandomAgent()
         self.heuristic = HeuristicAgent()
         self.ppo = PPOAgent(str(ppo_path)) if PPO_AGENT in agents else None
+        self.fresh_ppo = PPOAgent(str(fresh_ppo_path)) if FRESH_PPO_AGENT in agents and fresh_ppo_path is not None else None
         self.qwen: Optional[AgentRouter] = None
         self.hybrid: Optional[AgentRouter] = None
         if "qwen_rl" in agents:
@@ -231,6 +240,10 @@ class PolicySet:
             if self.ppo is None:
                 raise RuntimeError("Historical PPO checkpoint was not loaded.")
             return int(self.ppo.predict_action(obs, deterministic=True)), PPO_AGENT, None
+        if agent == FRESH_PPO_AGENT:
+            if self.fresh_ppo is None:
+                raise RuntimeError("Fresh PPO checkpoint was not loaded.")
+            return int(self.fresh_ppo.predict_action(obs, deterministic=True)), FRESH_PPO_AGENT, None
         router = self.qwen if agent == "qwen_rl" else self.hybrid if agent == "hybrid_router" else None
         if router is None:
             raise ValueError(f"Unsupported agent: {agent}")
@@ -317,7 +330,9 @@ def run_episode(*, agent: str, episode_index: int, case: ExperimentCase, max_ste
         mean_downtime=float(1.0 - mean_uptime),
         action_cost=float(action_cost),
         substituted_actions=substitutions,
+        substitution_rate=float(substitutions / len(rewards)) if rewards else 0.0,
         repeated_actions=repeats,
+        repeated_action_rate=float(repeats / max(len(rewards) - 1, 1)) if rewards else 0.0,
         survival_turns=len(rewards),
         decision_latency_ms=float(np.mean(latencies) if latencies else 0.0),
         fallback_count=fallbacks,
@@ -403,7 +418,25 @@ def _fmt(row: Dict[str, Any], metric: str) -> str:
     return f"{float(row[f'{metric}_mean']):.4f} +/- {float(row[f'{metric}_std']):.4f}"
 
 
-def _write_report(path: Path, metadata: Dict[str, Any], summaries: Sequence[Dict[str, Any]], failures: Sequence[FailureResult]) -> None:
+def aggregate_action_rates(rows: Sequence[EpisodeResult]) -> List[Dict[str, Any]]:
+    output: List[Dict[str, Any]] = []
+    for agent in dict.fromkeys(row.agent for row in rows):
+        agent_rows = [row for row in rows if row.agent == agent]
+        decisions = sum(row.survival_turns for row in agent_rows)
+        repeat_opportunities = sum(max(row.survival_turns - 1, 0) for row in agent_rows)
+        output.append({
+            "agent": agent,
+            "episode_mean_substitution_rate": float(np.mean([row.substitution_rate for row in agent_rows])),
+            "pooled_substitution_rate": float(sum(row.substituted_actions for row in agent_rows) / max(decisions, 1)),
+            "episode_mean_repeated_action_rate": float(np.mean([row.repeated_action_rate for row in agent_rows])),
+            "pooled_repeated_action_rate": float(sum(row.repeated_actions for row in agent_rows) / max(repeat_opportunities, 1)),
+            "decisions": decisions,
+            "repeat_opportunities": repeat_opportunities,
+        })
+    return output
+
+
+def _write_report(path: Path, metadata: Dict[str, Any], summaries: Sequence[Dict[str, Any]], failures: Sequence[FailureResult], rows: Sequence[EpisodeResult]) -> None:
     lines = [
         "# CySent P1 Baseline Benchmark", "",
         "This report contains only post-P0 executions from this output directory.", "",
@@ -425,6 +458,19 @@ def _write_report(path: Path, metadata: Dict[str, Any], summaries: Sequence[Dict
             f"{_fmt(row, 'mean_uptime')} | {_fmt(row, 'action_cost')} | "
             f"{_fmt(row, 'survival_turns')} | {row['sample_count']} |"
         )
+    lines.extend([
+        "", "## Action Rate Aggregation", "",
+        "Episode mean gives every episode equal weight. Pooled rate gives every decision (or repeat opportunity) equal weight.", "",
+        "| Agent | Episode-Mean Substitution | Pooled Substitution | Episode-Mean Repeat | Pooled Repeat | Decisions |",
+        "|---|---:|---:|---:|---:|---:|",
+    ])
+    for rate in aggregate_action_rates(rows):
+        lines.append(
+            f"| {rate['agent']} | {rate['episode_mean_substitution_rate']:.4%} | "
+            f"{rate['pooled_substitution_rate']:.4%} | "
+            f"{rate['episode_mean_repeated_action_rate']:.4%} | "
+            f"{rate['pooled_repeated_action_rate']:.4%} | {rate['decisions']} |"
+        )
     lines.extend(["", "## Metric Definitions", ""])
     for name, definition in METRIC_DEFINITIONS.items():
         lines.append(f"- `{name}` ({definition['direction']} is better): {definition['definition']}")
@@ -442,7 +488,7 @@ def _write_report(path: Path, metadata: Dict[str, Any], summaries: Sequence[Dict
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def build_metadata(*, agents: Sequence[str], seeds: Sequence[int], plan: Sequence[ExperimentCase], ppo_path: Path, max_steps: int, completed_count: int, failure_count: int) -> Dict[str, Any]:
+def build_metadata(*, agents: Sequence[str], seeds: Sequence[int], plan: Sequence[ExperimentCase], ppo_path: Path, max_steps: int, completed_count: int, failure_count: int, fresh_ppo_path: Optional[Path] = None) -> Dict[str, Any]:
     dirty_output = _git("status", "--short")
     source_paths = [
         PROJECT_ROOT / "backend/env/security_env.py",
@@ -484,19 +530,28 @@ def build_metadata(*, agents: Sequence[str], seeds: Sequence[int], plan: Sequenc
             "vecnormalize_required": False,
             "provenance": "Incomplete; compatibility verified, exact P0-corrected training source not claimed.",
         },
+        "fresh_ppo": {
+            "label": "Fresh PPO Primary Best Checkpoint",
+            "agent_id": FRESH_PPO_AGENT,
+            "path": str(fresh_ppo_path.relative_to(PROJECT_ROOT)),
+            "sha256": _sha256(fresh_ppo_path),
+            "committed": bool(_git("ls-files", str(fresh_ppo_path.relative_to(PROJECT_ROOT)))),
+        } if fresh_ppo_path is not None else None,
         "metric_definitions": METRIC_DEFINITIONS,
         "aggregation": "Arithmetic mean and population standard deviation across completed episodes; no outlier removal.",
         "historical_results_included": False,
     }
 
 
-def run_benchmark(*, agents: Sequence[str], seeds: Sequence[int], outdir: Path, max_steps: int = 150, matrix: Sequence[Dict[str, str]] = DEFAULT_MATRIX, ppo_path: Path = DEFAULT_PPO_PATH) -> Dict[str, Any]:
+def run_benchmark(*, agents: Sequence[str], seeds: Sequence[int], outdir: Path, max_steps: int = 150, matrix: Sequence[Dict[str, str]] = DEFAULT_MATRIX, ppo_path: Path = DEFAULT_PPO_PATH, fresh_ppo_path: Optional[Path] = None) -> Dict[str, Any]:
     agents = list(agents)
     seeds = list(seeds)
     plan = build_experiment_plan(seeds, matrix)
     if PPO_AGENT in agents and not ppo_path.exists():
         raise FileNotFoundError(f"Historical PPO checkpoint not found: {ppo_path}")
-    policies = PolicySet(agents, ppo_path)
+    if FRESH_PPO_AGENT in agents and (fresh_ppo_path is None or not fresh_ppo_path.exists()):
+        raise FileNotFoundError(f"Fresh PPO checkpoint not found: {fresh_ppo_path}")
+    policies = PolicySet(agents, ppo_path, fresh_ppo_path)
     rows: List[EpisodeResult] = []
     failures: List[FailureResult] = []
     for agent in agents:
@@ -509,7 +564,16 @@ def run_benchmark(*, agents: Sequence[str], seeds: Sequence[int], outdir: Path, 
     summaries = aggregate_results(rows)
     outdir = outdir if outdir.is_absolute() else PROJECT_ROOT / outdir
     outdir.mkdir(parents=True, exist_ok=True)
-    metadata = build_metadata(agents=agents, seeds=seeds, plan=plan, ppo_path=ppo_path, max_steps=max_steps, completed_count=len(rows), failure_count=len(failures))
+    metadata = build_metadata(
+        agents=agents,
+        seeds=seeds,
+        plan=plan,
+        ppo_path=ppo_path,
+        max_steps=max_steps,
+        completed_count=len(rows),
+        failure_count=len(failures),
+        fresh_ppo_path=fresh_ppo_path if FRESH_PPO_AGENT in agents else None,
+    )
     episode_fields = list(EpisodeResult.__dataclass_fields__)
     summary_fields = ["agent", "sample_count"] + [f"{metric}_{suffix}" for metric in AGGREGATE_METRICS for suffix in ("mean", "std")]
     _write_csv(outdir / "episodes.csv", (asdict(row) for row in rows), episode_fields)
@@ -517,7 +581,7 @@ def run_benchmark(*, agents: Sequence[str], seeds: Sequence[int], outdir: Path, 
     _write_csv(outdir / "action_distribution.csv", _action_distribution(rows), ["agent", "action_kind", "action_id", "action_name", "count", "rate"])
     _write_csv(outdir / "failures.csv", (asdict(row) for row in failures), list(FailureResult.__dataclass_fields__))
     (outdir / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    _write_report(outdir / "report.md", metadata, summaries, failures)
+    _write_report(outdir / "report.md", metadata, summaries, failures, rows)
     if summaries:
         _write_plots(outdir / "comparison.png", summaries)
     core_failures = [failure for failure in failures if failure.agent in CORE_AGENTS]
@@ -537,6 +601,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seeds", default=",".join(str(seed) for seed in DEFAULT_SEEDS))
     parser.add_argument("--max-steps", type=int, default=150)
     parser.add_argument("--ppo-path", default=str(DEFAULT_PPO_PATH.relative_to(PROJECT_ROOT)))
+    parser.add_argument("--fresh-ppo-path", default=str(DEFAULT_FRESH_PPO_PATH.relative_to(PROJECT_ROOT)))
     parser.add_argument("--outdir", default="outputs/benchmarks/p1_baseline_v2")
     return parser.parse_args()
 
@@ -549,6 +614,7 @@ def main() -> None:
         outdir=Path(args.outdir),
         max_steps=int(args.max_steps),
         ppo_path=PROJECT_ROOT / args.ppo_path,
+        fresh_ppo_path=PROJECT_ROOT / args.fresh_ppo_path,
     )
     print(json.dumps(result, indent=2))
     if result["status"] != "ok":

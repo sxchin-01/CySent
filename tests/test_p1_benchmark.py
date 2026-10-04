@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from backend.agents.heuristic_agent import HeuristicAgent
@@ -48,6 +49,32 @@ class HeuristicAgentTests(unittest.TestCase):
 
 
 class BenchmarkCorrectnessTests(unittest.TestCase):
+    def test_action_rates_distinguish_episode_mean_from_pooled_rate(self) -> None:
+        rows = [
+            SimpleNamespace(
+                agent="example",
+                survival_turns=2,
+                substituted_actions=1,
+                substitution_rate=0.5,
+                repeated_actions=1,
+                repeated_action_rate=1.0,
+            ),
+            SimpleNamespace(
+                agent="example",
+                survival_turns=10,
+                substituted_actions=1,
+                substitution_rate=0.1,
+                repeated_actions=1,
+                repeated_action_rate=1.0 / 9.0,
+            ),
+        ]
+
+        rates = benchmark.aggregate_action_rates(rows)[0]
+        self.assertAlmostEqual(rates["episode_mean_substitution_rate"], 0.3)
+        self.assertAlmostEqual(rates["pooled_substitution_rate"], 2.0 / 12.0)
+        self.assertAlmostEqual(rates["episode_mean_repeated_action_rate"], 5.0 / 9.0)
+        self.assertAlmostEqual(rates["pooled_repeated_action_rate"], 0.2)
+
     def test_plan_propagates_each_seed_to_each_real_configuration(self) -> None:
         plan = benchmark.build_experiment_plan([7, 11])
         self.assertEqual(len(plan), len(benchmark.DEFAULT_MATRIX) * 2)
@@ -116,6 +143,48 @@ class BenchmarkCorrectnessTests(unittest.TestCase):
             policies=policies,
         )
         self.assertEqual(set(json.loads(row.underlying_agents)), {benchmark.PPO_AGENT})
+
+    def test_historical_and_fresh_ppo_identities_and_hashes_are_distinct(self) -> None:
+        historical_hash = "4D4955993DD2D98CC3B8D3319C1CDA92F10EFBA95407B3D78D9763E5D968D1AF"
+        fresh_hash = "7BA9122F3AE4BD67E539EC3BEE95EB587F63F22091605DDEF044190586DC0197"
+        plan = benchmark.build_experiment_plan([42], benchmark.DEFAULT_MATRIX[:1])
+        metadata = benchmark.build_metadata(
+            agents=[benchmark.PPO_AGENT, benchmark.FRESH_PPO_AGENT],
+            seeds=[42],
+            plan=plan,
+            ppo_path=benchmark.DEFAULT_PPO_PATH,
+            fresh_ppo_path=benchmark.DEFAULT_FRESH_PPO_PATH,
+            max_steps=5,
+            completed_count=0,
+            failure_count=0,
+        )
+
+        self.assertEqual(metadata["ppo"]["agent_id"], benchmark.PPO_AGENT)
+        self.assertEqual(metadata["ppo"]["sha256"], historical_hash)
+        self.assertEqual(metadata["fresh_ppo"]["agent_id"], benchmark.FRESH_PPO_AGENT)
+        self.assertEqual(metadata["fresh_ppo"]["sha256"], fresh_hash)
+
+        policies = benchmark.PolicySet(
+            [benchmark.PPO_AGENT, benchmark.FRESH_PPO_AGENT],
+            benchmark.DEFAULT_PPO_PATH,
+            benchmark.DEFAULT_FRESH_PPO_PATH,
+        )
+        historical = benchmark.run_episode(
+            agent=benchmark.PPO_AGENT,
+            episode_index=0,
+            case=plan[0],
+            max_steps=2,
+            policies=policies,
+        )
+        fresh = benchmark.run_episode(
+            agent=benchmark.FRESH_PPO_AGENT,
+            episode_index=0,
+            case=plan[0],
+            max_steps=2,
+            policies=policies,
+        )
+        self.assertEqual(set(json.loads(historical.underlying_agents)), {benchmark.PPO_AGENT})
+        self.assertEqual(set(json.loads(fresh.underlying_agents)), {benchmark.FRESH_PPO_AGENT})
 
     def test_failures_are_recorded_and_not_counted_as_episodes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
