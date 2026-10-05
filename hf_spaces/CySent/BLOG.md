@@ -1,3 +1,5 @@
+> **Historical material:** This article predates the frozen CySent v1 identity, artifact, and evaluation contracts. It contains obsolete policy names and aspirational claims. For current behavior and evidence, use the repository `README.md`, `docs/architecture.md`, `docs/experiments.md`, and `docs/v1-run.md`.
+
 # CySent: Autonomous Defense Through Simulation
 
 If you've spent any time working in cybersecurity, you know the frustrating reality: most of our tools are purely reactive. They're really good at setting off alarms after the perimeter has been breached, or summarizing the damage after the fact. The result? Analysts are drowning in more notifications than humanly possible to investigate. Meanwhile, adversaries are fully automated—launching phishing campaigns, stealing credentials, and deploying ransomware at machine speed.

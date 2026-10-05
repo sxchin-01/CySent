@@ -1,202 +1,245 @@
 # CySent
 
-Autonomous cyber defense simulator with live environment decision-making.
+CySent is an experimental autonomous cyber-defense simulation and evaluation
+platform for comparing BLUE policies against seeded, profile-driven RED
+behavior. It studies a sequential decision problem: given the current security
+condition of a dynamically attacked enterprise network, what defensive action
+should be taken now to reduce future damage while preserving availability?
 
-CySent models adversarial attacks (RED) and autonomous defense actions (BLUE) in a Gymnasium-style environment, with a Next.js command dashboard and a FastAPI backend.
+CySent is a research simulator, not production EDR, SIEM, SOC infrastructure,
+or evidence of real-network protection.
 
-## Project Overview
+## Why CySent
 
-CySent is designed for submission/demo workflows where you need:
-1. A reproducible cyber defense environment with measurable risk and reward.
-2. A stable PPO baseline policy.
-# CySent
+Cyber defense is not a single-label classification problem. A defensive action
+can reduce one risk while consuming budget, causing downtime, entering
+cooldown, or changing what is possible on the next turn. CySent makes those
+trade-offs measurable and evaluates policies using reward, breaches, risk,
+uptime, action cost, survival, and requested-versus-executed behavior.
 
-Autonomous cyber defense simulator with live environment decision-making.
+The primary research focus is BLUE policy behavior. RED is configurable,
+profile-driven adversarial logic; it is not learned RL, MARL, self-play, or a
+trained adversarial policy.
 
-CySent models adversarial attacks (RED) and autonomous defense actions (BLUE) in a Gymnasium-style environment, with a Next.js command dashboard and a FastAPI backend.
+## What It Evaluates
 
-## Project Overview
+The experimental loop is:
 
-CySent is designed for submission/demo workflows where you need:
-1. A reproducible cyber defense environment with measurable risk and reward.
-2. A stable PPO baseline policy.
-3. An optional Hugging Face LLM agent path using a merged RL-trained Qwen model.
-4. Exportable replay/benchmark evidence.
-
-## Stack
-
-1. Frontend: Next.js + TypeScript + Tailwind + Cytoscape.
-2. Backend: FastAPI + Python.
-3. Environment: custom Gymnasium-compatible security environment.
-4. Agents:
-	1. PPO (`ppo_agent`) default baseline.
-	2. HF LLM (`hf_llm_agent`) using merged model repo when configured.
-
-## Agent Paths
-
-1. PPO Agent
-	1. Deterministic baseline for stable defense behavior.
-	2. Remains default-safe runtime path.
-
-2. Hugging Face LLM Agent
-	1. Uses merged model target when `HF_MERGED_MODEL_ID` is set.
-	2. Current merged model repo: `sxchin01/CySent-Qwen-RL-merged`.
-	3. Intended for RL-tuned Qwen behavior in the same live environment loop.
-
-## Training Pipeline
-
-1. PPO live environment training
-	1. Script: `backend/train/train_ppo.py`.
-	2. Produces PPO baseline artifacts in `backend/train/artifacts/`.
-
-2. Qwen SFT warm start (optional)
-	1. Notebook: `notebooks/CySent_Unsloth_Train.ipynb`.
-	2. Produces adapter warm-start artifacts (optional stage).
-
-3. Qwen live RL fine-tuning against environment
-	1. Notebook: `notebooks/CySent_Qwen_LiveRL.ipynb`.
-	2. Script path used by jobs: `scripts/train_on_hf.py`.
-	3. Merge/export helper: `merge_upload.py`.
-
-## Training the Model
-
-To reproduce the live RL training:
-
-```bash
-hf jobs uv run --flavor t4-small --secrets HF_TOKEN --timeout 12h scripts/train_on_hf.py
+```text
+RED threat engine -> cyber environment -> observation/state -> BLUE policy
+-> requested action -> constrained execution -> security outcome + reward
+-> next state
 ```
 
-This will run 100 training steps on a free-tier T4 GPU and generate training metrics (reward, loss, turns) saved to `training_history.json`.
+The Gymnasium-compatible environment exposes a 67-value observation to PPO
+policies and a discrete 12-action BLUE interface. The environment may replace
+a requested action when constraints such as cooldowns or action validity make
+it unavailable. CySent therefore records requested and executed actions
+separately.
 
-For a quick test run (50 steps, ~20 min, ~$0.35):
+## Architecture
 
-```bash
-hf jobs uv run --flavor t4-small --secrets HF_TOKEN scripts/train_on_hf.py --test
+```mermaid
+flowchart LR
+    P[Scenario, difficulty, attacker profiles] --> R[Rule-based RED threat engine]
+    R --> E[CySentSecurityEnv]
+    E --> O[Observation and state]
+    O --> B[BLUE policy]
+    B --> Q[Requested action]
+    Q --> X[Constraint checks and substitution]
+    X --> E
+    E --> M[Risk, breaches, uptime, cost, reward]
+    M --> O
+
+    API[FastAPI runtime] --> E
+    UI[Next.js demo] --> API
+    BENCH[Authoritative benchmark runner] --> E
+    VERIFY[Artifact manifest and verification] --> B
+    NB[Optional Qwen GPU notebook] --> B
 ```
 
-## Hugging Face Repositories
+The frontend is an observable local demo interface. Scientific comparisons
+are produced by `backend/train/benchmark_agents.py`, not by the UI or the
+deprecated API benchmark endpoint. See [Architecture](docs/architecture.md)
+for component and data-contract details.
 
-1. Space repo (app code):
-	1. `https://huggingface.co/spaces/sxchin01/CySent`
+## BLUE Policies
 
-2. Model repo (merged RL model):
-	1. `https://huggingface.co/sxchin01/CySent-Qwen-RL-merged`
+| Identity | Method | Live/demo status | Artifact requirement | Evaluation status |
+|---|---|---|---|---|
+| `random` | Seeded random baseline | Live | None | Frozen P1/P2 evidence |
+| `heuristic` | Deterministic visible-state rules | Benchmark-only | None | Frozen P1/P2 evidence |
+| `ppo_historical_checkpoint` | Stable-Baselines3 PPO | Live when verified | External checkpoint | Frozen P1/P2 evidence |
+| `ppo_fresh_checkpoint` | Fresh Stable-Baselines3 PPO | Benchmark-only | External checkpoint | Frozen P2 evidence |
+| `qwen_rl` | Historical constrained Qwen policy | Live when verified | Immutable merged snapshot and practical GPU | Real-model smoke; controlled benchmark incomplete |
+| `hybrid_router` | Historical PPO with risk/periodic Qwen routing | Live when both dependencies are verified | Historical PPO and Qwen artifacts | Unit-tested; real-model evaluation incomplete |
 
-## Run Locally
+Generic generative `HFAgent` support remains available only under the separate
+legacy identity `hf_generative_legacy`; it is not the canonical `qwen_rl`
+research policy.
 
-### 1) Install dependencies
+## Frozen Results
 
-Windows PowerShell:
+### P1: controlled baseline matrix
+
+P1 evaluated Random, Heuristic, and Historical PPO over three seeds and three
+fixed cases, for 27/27 completed episodes with no failures. Values are means
+over nine episodes per policy.
+
+| Policy | Reward | Breach rate | Mean risk | Final risk | Uptime | Defensive cost | Survival |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Random | 58.1793 | 0.1111 | 0.1112 | 0.1066 | 0.9054 | 16.0544 | 144.56 |
+| Heuristic | 71.3276 | 0.1587 | 0.1754 | 0.2356 | 0.9320 | 10.8656 | 113.22 |
+| Historical PPO | -41.3488 | 0.2063 | 0.2731 | 0.3821 | 0.8319 | 6.6844 | 111.11 |
+
+Heuristic produced the highest reward and uptime in this matrix, while Random
+had lower breach/risk values and longer survival. This is evidence that reward
+and operational/security outcomes must be interpreted together, not a claim
+that one policy is globally best. Historical PPO requested
+`investigate_top_alert` on 1000/1000 decisions; 498/1000 executions were
+substituted to `do_nothing`.
+
+Evidence: [`outputs/benchmarks/p1_baseline_v2/`](outputs/benchmarks/p1_baseline_v2/)
+
+### P2: Fresh PPO controlled evaluation
+
+Fresh PPO was added to the same frozen evaluation matrix, producing 36/36
+completed four-policy episodes with no failures. The Fresh PPO row below is
+reported separately because it was introduced in the P2 experiment.
+
+| Policy | Reward | Breach rate | Mean risk | Final risk | Uptime | Defensive cost | Survival |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Fresh PPO | -37.5918 | 0.1905 | 0.2648 | 0.3507 | 0.8375 | 6.9178 | 110.89 |
+
+Fresh PPO requested `investigate_top_alert` on 967/998 decisions and
+`increase_monitoring` on 31/998. Executed actions were 490 investigations, 477
+no-ops, and 31 monitoring actions. Its episode-mean substitution rate was
+48.16% and its episode-mean repeat rate was 98.61% (pooled: 47.80% and
+98.18%). This is highly concentrated, near-collapsed deterministic benchmark
+behavior. Diagnostics identify several plausible contributing factors, but do
+not establish one definitive cause.
+
+Evidence: [`outputs/benchmarks/p2_fresh_ppo_primary/`](outputs/benchmarks/p2_fresh_ppo_primary/)
+
+See [Experiments and Evidence](docs/experiments.md) for matrices, aggregation,
+standard deviations, action behavior, and provenance limitations.
+
+## Qwen Historical-Policy Finding
+
+The historically faithful Qwen evaluator does not generate free-text actions.
+It gathers the first-token logit for each of the 12 canonical action names and
+samples from the resulting constrained categorical policy. Those 12 action
+categories contain only 10 unique first-token IDs. `patch_hr_systems`,
+`patch_web_server`, and `patch_auth_server` share one token and therefore have
+identical constrained logits and probabilities.
+
+CySent preserves this historical limitation under policy identity
+`historical_first_token_seeded_categorical_v1`. Evaluation uses the model's
+FP16 forward pass on the verified T4 run, FP32 normalization of the 12 gathered
+logits, and seeded categorical sampling with an agent-local CPU generator.
+
+A real merged-model smoke test succeeded on three seed-42 scenarios and
+produced valid environment steps while reproducing the collision. This proves
+artifact loading and faithful policy execution, not comparative performance.
+The controlled Qwen benchmark remains incomplete.
+
+## Hybrid Status
+
+The Hybrid Router is implemented and unit-tested. It ordinarily uses
+Historical PPO, invokes Qwen when network risk is greater than `0.7` or on the
+configured periodic turn, and may fall back to Historical PPO with a recorded
+reason when a runtime Qwen decision fails.
+
+Real-model Hybrid smoke repeatedly caused abrupt Colab kernel termination. No
+Python exception or explicit host/CUDA OOM was captured; the cause remains
+unresolved. Controlled Hybrid performance has not been measured.
+
+## Quick Start
+
+The artifact-free CPU path is the v1 minimum reproducible demo.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -r backend/requirements.txt
-npm --prefix frontend install
+python -m pip install -r backend/requirements-cpu.txt
+npm --prefix frontend ci
 ```
 
-Linux/macOS:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r backend/requirements.txt
-npm --prefix frontend install
-```
-
-### 2) Configure `.env`
-
-Required variables for current merged-model setup:
-
-```dotenv
-HF_TOKEN=your_hf_token
-HF_MODEL_ID=Qwen/Qwen2.5-3B-Instruct
-HF_ADAPTER_PATH=sxchin01/CySent-Qwen-RL
-HF_MERGED_MODEL_ID=sxchin01/CySent-Qwen-RL-merged
-HF_ENDPOINT_URL=
-HF_TIMEOUT=45.0
-
-DEFAULT_AGENT=ppo_agent
-AGENT_MODE=hybrid
-HYBRID_THRESHOLD=10
-
-API_HOST=127.0.0.1
-API_PORT=8000
-NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
-```
-
-Note:
-1. `.env` is git-ignored.
-2. Never commit real tokens.
-
-### 3) Start backend and frontend
-
-Backend:
+Start the backend:
 
 ```powershell
-python -m uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-Frontend:
+In a second terminal, start the frontend:
 
 ```powershell
-npm --prefix frontend run dev
+npm --prefix frontend run dev -- --hostname 127.0.0.1 --port 3000
 ```
 
-Open:
-1. Frontend: `http://127.0.0.1:3000`
-2. API docs: `http://127.0.0.1:8000/docs`
+Open `http://127.0.0.1:3000`. Random is the default artifact-free live policy.
+The UI also exposes compact manual BLUE actions. `/agents` reports which
+artifact-dependent policies are actually available; unavailable policies are
+not silently substituted.
 
-## Switch Agents in Frontend
+## Reproducing Experiments
 
-1. Use the agent selector in the dashboard (PPO vs HF LLM).
-2. For explicit HF testing, select `hf_llm_agent` then reset/start a run.
-3. Backend receives this selection as `action_source` through `/reset`.
+- [CySent v1 run guide](docs/v1-run.md)
+- [Experiments and evidence](docs/experiments.md)
+- [Architecture and contracts](docs/architecture.md)
+- [Artifact manifest](configs/artifacts_v1.json)
 
-## Screenshots / Assets
+Random and Heuristic evaluation is reproducible from a fresh clone on CPU.
+Historical and Fresh PPO require external checkpoints matching their manifest
+hashes. Qwen requires the pinned external merged-model snapshot and a CUDA GPU
+for the evaluated local path. The original SFT/RL training notebooks are
+historical material, not required for v1 CPU reproduction.
 
-Current screenshot assets in repo:
-1. `assets/screenshots/architecture.png`
-2. `assets/screenshots/dashboard.png`
-3. `assets/screenshots/colab_training_1.png`
-4. `assets/screenshots/hf training.jpeg`
+## Repository Structure
 
-## Known Limitations
+```text
+backend/env/                 Simulation, RED engine, risk, and reward
+backend/agents/              Canonical policy implementations and router
+backend/api/                 FastAPI demo runtime
+backend/train/               PPO training and authoritative benchmark runner
+configs/                     Frozen training and artifact contracts
+frontend/                    Next.js local demo interface
+docs/                        Architecture, evidence, and run guides
+notebooks/                   Historical training and optional Qwen evaluation
+outputs/benchmarks/          Tracked frozen P1/P2 evidence
+```
 
-1. HF Space git remote history can diverge from local because of binary/LFS constraints; API sync may be needed for code-only updates.
-2. HF Jobs scheduling can occasionally stall; retry or run merge from a GPU notebook when needed.
-3. Provider/endpoint behavior may vary by account routing; merged model repo usage is the most stable path for this project.
-4. On Windows, running multiple uvicorn instances causes `WinError 10048` on port `8000`; keep one backend instance only.
+## Limitations
 
-## Results
+- CySent is a simulation and does not establish production network protection.
+- RED is profile-driven automated logic, not a learned adversarial policy.
+- The benchmark matrix is small; no statistical significance or broad
+  external validity is claimed.
+- Historical and Fresh PPO showed concentrated deterministic behavior and
+  substantial requested-to-executed substitution.
+- The historical Qwen policy has a first-token action collision.
+- Controlled Qwen and Hybrid benchmarks are incomplete; Hybrid real-model
+  termination remains unresolved.
+- PPO and Qwen artifacts are external and are not stored in Git.
+- P5 automated validation passed, but manual browser verification of visual
+  interactions and replacement screenshots remains pending.
 
-Current benchmark outputs are available in the repository and were generated from the live CySent environment:
+## Future Work
 
-1. PPO vs Random benchmark artifacts:
-	1. `outputs/benchmarks_ppo_only/benchmark_summary.json`
-	2. `outputs/benchmarks_ppo_only/benchmark_results.csv`
-	3. `outputs/benchmarks_ppo_only/benchmark_report.md`
-	4. `outputs/benchmarks_ppo_only/benchmark_plot.png`
-2. Mixed-agent benchmark artifacts:
-	1. `outputs/benchmarks_hf_full/benchmark_summary.json`
-	2. `outputs/benchmarks_hf_full/benchmark_results.csv`
-	3. `outputs/benchmarks_hf_full/benchmark_report.md`
-	4. `outputs/benchmarks_hf_full/benchmark_plot.png`
+- Diagnose the constrained-GPU Hybrid termination.
+- Complete controlled Qwen and Hybrid evaluation.
+- Explore a Qwen v2 policy with unique action scoring while preserving v1.
+- Improve PPO observability and action-validity handling.
+- Extend reward-alignment analysis, seeds, scenarios, OOD evaluation, and
+  ablations.
+- Redesign the frontend after the v1 research record is frozen.
 
-Training evidence is still being finalized in the live RL notebook, but the project already includes the runnable notebook and benchmark outputs needed to reproduce evaluation.
+## Project Status
 
-## Submission Links (Placeholders)
-
-1. Demo video: `TBD`
-2. GitHub repo: `https://github.com/sxchin-01/CySent`
-3. HF Space: `https://huggingface.co/spaces/sxchin01/CySent`
-4. HF merged model: `https://huggingface.co/sxchin01/CySent-Qwen-RL-merged`
-5. Benchmark evidence: `TBD`
-
-## Repo Hygiene Notes
-
-1. `.env` is ignored by `.gitignore`.
-2. Secrets should be passed via local env, HF secrets, or CI secrets only.
-3. Use `git status` before pushing to confirm no accidental secret/config file is staged.
+CySent v1 has a frozen simulation baseline, reproducible CPU baselines,
+Historical and Fresh PPO evidence, faithful Qwen policy reconstruction,
+artifact contracts, and a truthful local demo interface. The broader research
+program is not complete: controlled Qwen/Hybrid evaluation, Hybrid crash
+diagnosis, manual P5 browser verification, and refreshed screenshots remain
+open.

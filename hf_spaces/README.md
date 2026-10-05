@@ -1,22 +1,9 @@
-# Hugging Face Spaces (Docker) Launch
+# Hugging Face Spaces Packaging
 
-This folder contains a Docker-based launch option for CySent on Hugging Face Spaces.
+This directory contains optional deployment packaging. It is not the canonical CySent v1 reproducibility path and was not validated during the P6 documentation pass.
 
-## Expected Space setup
-- SDK: Docker
-- App port: 7860
+The current container path is intended to serve the FastAPI backend and Next.js frontend. Random, Heuristic, and manual execution are the only artifact-free paths. Historical PPO, Fresh PPO, Qwen RL, and Hybrid require their exact external artifacts and provenance checks; packaging alone does not make those policies available.
 
-## Files
-- `Dockerfile`: Builds backend API and frontend app in one container.
-- `start.sh`: Starts backend on 8000 and serves frontend on 7860.
+For the supported local CPU research/demo workflow, use [`docs/v1-run.md`](../docs/v1-run.md). Do not infer deployment readiness from the presence of Docker or Spaces files.
 
-## Environment variables
-Set these in Space secrets/variables:
-- `HF_TOKEN`
-- `HF_MODEL_ID`
-- `HF_ENDPOINT_URL`
-- `HF_TIMEOUT`
-- `AGENT_MODE`
-- `HYBRID_THRESHOLD`
-
-The frontend will call backend via `http://127.0.0.1:8000` inside the same container.
+The legacy `hf_spaces/CySent` Gradio material is retained as historical project context. It uses older naming and claims and is not the authoritative v1 API, interface, or policy contract. See the banner in `hf_spaces/CySent/BLOG.md` before citing that material.

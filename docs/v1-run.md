@@ -1,115 +1,139 @@
-# CySent v1 Research/Demo Run Guide
+# CySent v1 Run Guide
 
-Run commands from the repository root. The artifact-free CPU demonstration is
-the minimum reproducible v1 deployment; Qwen and PPO are optional.
+CySent v1 is a reproducible research and demonstration system. The artifact-free live path runs Random and manual actions on CPU; the artifact-free benchmark path also includes Heuristic. PPO and Qwen paths require separately supplied model artifacts.
 
-## Install
+## Requirements
+
+- Python 3.10 or newer
+- Node.js 18 or newer
+- npm
+- Windows PowerShell commands are shown first; equivalent POSIX commands follow where they differ.
+
+## Fresh-Clone CPU Setup
+
+From the repository root on Windows:
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r backend/requirements-cpu.txt
-npm --prefix frontend ci
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r backend/requirements-cpu.txt
+cd frontend
+npm install
+cd ..
 ```
 
-Use `backend/requirements.txt` instead only when preparing the optional Qwen or
-training workflows.
+On Linux or macOS, replace `.\.venv\Scripts\python.exe` with `.venv/bin/python`.
 
-## CPU-only research demo
+The CPU setup does not require a Hugging Face token, a PPO checkpoint, or a Qwen artifact for the Random/manual demo or Random/Heuristic benchmarks.
 
-This command uses only Random and deterministic Heuristic agents, seeds
-42, 43, and 44, and 150 maximum steps. It requires no PPO or Qwen artifact.
+## Start the Backend
+
+From the repository root:
 
 ```powershell
-python -m backend.train.benchmark_agents --agents random,heuristic --seeds 42,43,44 --max-steps 150 --outdir outputs/benchmarks/v1_cpu_demo
+.\.venv\Scripts\python.exe -m uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-`backend.train.benchmark_agents` is the sole authoritative research comparison
-runner. The legacy API `/benchmark` endpoint is disabled.
+The API is available at `http://127.0.0.1:8000`. Use `GET /agents` to inspect which canonical policies are currently available and why unavailable policies cannot run.
 
-## Backend and frontend
-
-```powershell
-python -m uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
-```
+## Start the Frontend
 
 In a second terminal:
 
 ```powershell
-npm --prefix frontend run dev -- --hostname 127.0.0.1 --port 3000
+cd frontend
+npm run dev
 ```
 
-Open `http://127.0.0.1:3000`. Without optional artifacts, use the Random live
-agent. `/agents` reports exact live availability.
+Open `http://localhost:3000`. The frontend uses `http://127.0.0.1:8000` by default unless `NEXT_PUBLIC_API_URL` is set.
 
-## Optional Historical PPO
+## CPU Demonstration
 
-Place the checkpoint at:
+1. Start the backend and frontend.
+2. Select `Random` from the policy controls.
+3. Reset the episode, then step or run it.
+4. Inspect requested and executed actions, substitutions, reward, risk, uptime, cost, and episode state.
+5. Pause to inspect history or submit a manual action.
 
-`backend/train/artifacts/best_model/best_model.zip`
+Random and Heuristic must remain usable when every model-backed policy is unavailable. The interface reports unavailable PPO, Qwen, and Hybrid paths rather than silently substituting another identity.
 
-Expected SHA256:
+## CPU Benchmark
 
-`4D4955993DD2D98CC3B8D3319C1CDA92F10EFBA95407B3D78D9763E5D968D1AF`
-
-Verify it before use:
+The frozen three-case matrix can be rerun for artifact-free policies:
 
 ```powershell
-python -m backend.artifacts historical_ppo
+.\.venv\Scripts\python.exe -m backend.train.benchmark_agents --agents random,heuristic --seeds 42,43,44 --max-steps 150 --outdir outputs/benchmarks/v1_cpu_demo
 ```
 
-Live PPO inference is deterministic and loads on CPU. A missing or mismatched
-checkpoint makes `ppo_historical_checkpoint` unavailable; no fallback checkpoint
-is loaded.
+Choose a new output directory for each run. Do not overwrite the frozen evidence under `outputs/benchmarks/p1_baseline_v2` or `outputs/benchmarks/p2_fresh_ppo_primary`.
 
-## Optional Fresh PPO
+## PPO Artifacts
 
-Place the checkpoint at:
+PPO checkpoints are intentionally not bundled as ordinary source dependencies. The frozen identities are:
 
-`backend/train/artifacts/p2_fresh_ppo/p2_fresh_primary_seed42/best_model/best_model.zip`
+| Identity | Expected path | SHA-256 |
+| --- | --- | --- |
+| Historical PPO | `backend/train/artifacts/best_model/best_model.zip` | `4D4955993DD2D98CC3B8D3319C1CDA92F10EFBA95407B3D78D9763E5D968D1AF` |
+| Fresh PPO best | `backend/train/artifacts/p2_fresh_ppo/p2_fresh_primary_seed42/best_model/best_model.zip` | `7BA9122F3AE4BD67E539EC3BEE95EB587F63F22091605DDEF044190586DC0197` |
 
-Expected SHA256:
-
-`7BA9122F3AE4BD67E539EC3BEE95EB587F63F22091605DDEF044190586DC0197`
-
-Verify it with:
+After placing an artifact at its expected path, verify it before execution:
 
 ```powershell
-python -m backend.artifacts fresh_ppo
+.\.venv\Scripts\python.exe -m backend.artifacts historical_ppo
+.\.venv\Scripts\python.exe -m backend.artifacts fresh_ppo
 ```
 
-Fresh PPO remains benchmark-only in P4.
+With both verified checkpoints, the controlled four-agent benchmark command is:
 
-## Optional Qwen RL and Hybrid
+```powershell
+.\.venv\Scripts\python.exe -m backend.train.benchmark_agents --agents random,heuristic,historical_ppo,fresh_ppo --seeds 42,43,44 --max-steps 150 --outdir outputs/benchmarks/local_four_agent_run
+```
 
-The required merged model identity is:
+This creates new evidence; it does not replace the frozen P1/P2 results.
+
+## Qwen GPU Evaluation
+
+The canonical Qwen artifact is:
 
 - Repository: `sxchin01/CySent-Qwen-RL-merged`
 - Immutable revision: `fb75512b037bb37de575916afd900c03ab860cb5`
-- Local placement: the exact Hugging Face cache snapshot directory ending in
-  `models--sxchin01--CySent-Qwen-RL-merged/snapshots/fb75512b037bb37de575916afd900c03ab860cb5`
 - Policy: `historical_first_token_seeded_categorical_v1`
 
-Acquire that exact immutable revision explicitly with the Hugging Face CLI or
-API, then set `HF_ADAPTER_PATH` to the resulting snapshot directory. CySent does
-not contact Hugging Face to establish readiness and does not trust an arbitrary
-directory, mutable branch, or user-entered revision string as canonical proof.
-
-Verify the local snapshot provenance without loading model weights:
+Qwen execution requires a compatible GPU environment and a verified Hugging Face cache snapshot or verified local artifact metadata. Set `HF_ADAPTER_PATH` to that resolved local path; do not use an unverified directory merely because it contains model files.
 
 ```powershell
-python -m backend.artifacts qwen_merged --path $env:HF_ADAPTER_PATH
+.\.venv\Scripts\python.exe -m backend.artifacts qwen_merged --path $env:HF_ADAPTER_PATH
 ```
 
-No download URL or credential is embedded in CySent. Local Qwen inference is
-expected to use a CUDA GPU. If exact snapshot provenance cannot be established,
-`qwen_rl` and `hybrid_router` are unavailable. Generic text generation is never
-substituted.
+The historical evaluation workflow is documented in `notebooks/cysent_qwen_evaluation.ipynb`. It preserves the historical prompt, first-token scoring, action-token collision, FP32 categorical normalization, and agent-local seeded sampling contract. Real Qwen smoke testing succeeded, but a controlled tracked Qwen benchmark result is not part of the frozen v1 evidence. Real-model Hybrid smoke remains incomplete because the hosted GPU session terminated without a captured Python exception.
 
-Hybrid preserves the frozen threshold and periodic routing rules. A runtime
-Qwen decision failure may fall back to Historical PPO with a nonempty recorded
-reason; missing startup artifacts do not produce a silently degraded Hybrid.
+The original SFT/RL notebooks are historical training records, not the canonical v1 execution path.
 
-The complete identity, hash, compute, and unavailable-state contract is in
-`configs/artifacts_v1.json`.
+## Tests and Builds
+
+Backend suite:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests -q
+```
+
+Frontend checks:
+
+```powershell
+cd frontend
+npm run typecheck
+npm run build
+```
+
+## Reproducibility Classification
+
+| Path | Fresh clone | External artifact | GPU | v1 status |
+| --- | --- | --- | --- | --- |
+| Random / Heuristic / manual | Yes | No | No | Reproducible CPU demo |
+| Historical / Fresh PPO | Code only | Required | No | Reproducible after hash verification |
+| Qwen RL | Code only | Required | Yes for intended evaluation | Real smoke verified; controlled benchmark incomplete |
+| Hybrid Router | Code only | PPO and Qwen required | Yes for Qwen branch | Routing tested; real-model smoke incomplete |
+
+## Deployment Notes
+
+The repository contains Docker and Hugging Face Spaces packaging, but those paths are not the frozen v1 reproducibility contract and have not been validated as part of P6. Use the local CPU workflow above for the supported demo path.
