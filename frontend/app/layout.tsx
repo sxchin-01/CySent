@@ -17,8 +17,8 @@ const mono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "CySent | AI Security Operations Commander",
-  description: "Cybersecurity RL simulation dashboard for Blue-team policy optimization",
+  title: "CySent | Cyber-Defense Research Simulator",
+  description: "Experimental cyber-defense simulation and BLUE policy evaluation interface",
 };
 
 export default function RootLayout({

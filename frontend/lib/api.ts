@@ -1,4 +1,4 @@
-import { EnvState, StepResult } from "@/lib/types";
+import { AgentsResponse, EnvState, StepResult } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 const REQUEST_TIMEOUT_MS = 12_000;
@@ -8,8 +8,8 @@ function buildApiBases(): string[] {
   const normalizedPrimary = API_BASE.replace(/\/$/, "");
   bases.add(normalizedPrimary);
 
-  // Browser fallback for loopback host mismatches (localhost vs 127.0.0.1).
-  if (typeof window !== "undefined") {
+  // Browser fallback only for local loopback host mismatches.
+  if (typeof window !== "undefined" && isLoopbackUrl(normalizedPrimary)) {
     const browserLoopbacks = ["http://127.0.0.1:8000", "http://localhost:8000"];
     for (const base of browserLoopbacks) {
       bases.add(base);
@@ -17,6 +17,25 @@ function buildApiBases(): string[] {
   }
 
   return Array.from(bases);
+}
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname;
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
+function formatErrorDetail(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (!detail || typeof detail !== "object") return String(detail ?? "");
+
+  const payload = detail as Record<string, unknown>;
+  const parts = [payload.message, payload.reason, payload.hint, payload.error]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return Array.from(new Set(parts)).join(" ") || JSON.stringify(payload);
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -41,7 +60,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
         try {
           const payload = await res.clone().json() as { detail?: unknown };
           if (payload && payload.detail !== undefined) {
-            detail = ` - ${String(payload.detail)}`;
+            detail = ` - ${formatErrorDetail(payload.detail)}`;
           }
         } catch {
           try {
@@ -84,6 +103,10 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function fetchState(): Promise<EnvState> {
   return requestJson<EnvState>("/state");
+}
+
+export async function fetchAgents(): Promise<AgentsResponse> {
+  return requestJson<AgentsResponse>("/agents");
 }
 
 export async function step(): Promise<StepResult> {

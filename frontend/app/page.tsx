@@ -5,13 +5,14 @@ import { motion } from "framer-motion";
 import { ChevronRight, Radar } from "lucide-react";
 
 import { AICommander } from "@/components/ai-commander";
+import { ActionControls } from "@/components/action-controls";
 import { IncidentFeed } from "@/components/incident-feed";
 import { MetricsPanel } from "@/components/metrics-panel";
 import { NetworkGraph } from "@/components/network-graph";
 import { ReplayControls } from "@/components/replay-controls";
 import { Topbar } from "@/components/topbar";
-import { fetchState, resetSimulation, step } from "@/lib/api";
-import { EnvState, StepResult, StrategyMode, TimelineFrame, TimelinePoint, ActionSource } from "@/lib/types";
+import { fetchAgents, fetchState, resetSimulation, step, stepWithActionName } from "@/lib/api";
+import { AgentAvailability, EnvState, StepResult, StrategyMode, TimelineFrame, TimelinePoint, ActionSource } from "@/lib/types";
 
 const initialState: EnvState = {
   episode_id: "",
@@ -24,6 +25,7 @@ const initialState: EnvState = {
   profile: {},
   intelligence: { enabled: true },
   events: [],
+  alerts: [],
   narrative: "",
   termination_reason: "active",
 };
@@ -34,19 +36,24 @@ export default function HomePage() {
   const [difficulty, setDifficulty] = useState("hard");
   const [attacker, setAttacker] = useState("ransomware_gang");
   const [strategyMode, setStrategyMode] = useState<StrategyMode>("balanced");
-  const [actionSource, setActionSource] = useState<ActionSource>("ppo_historical_checkpoint");
-  const [activeAgentLabel, setActiveAgentLabel] = useState("Historical PPO Defender");
+  const [actionSource, setActionSource] = useState<ActionSource>("random");
+  const [agentOptions, setAgentOptions] = useState<AgentAvailability[]>(INITIAL_AGENT_OPTIONS);
+  const [activeAgentLabel, setActiveAgentLabel] = useState("No action executed");
 
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [booting, setBooting] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [episodeReady, setEpisodeReady] = useState(false);
+  const [episodeHasRun, setEpisodeHasRun] = useState(false);
+  const [latestResult, setLatestResult] = useState<StepResult | null>(null);
   const [incidents, setIncidents] = useState<string[]>([]);
   const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
   const [frames, setFrames] = useState<TimelineFrame[]>([]);
 
   const [replayIndex, setReplayIndex] = useState(0);
   const [replayPlaying, setReplayPlaying] = useState(false);
+  const [replayActive, setReplayActive] = useState(false);
   const [replaySpeed, setReplaySpeed] = useState(1);
   const [timelineCollapsed, setTimelineCollapsed] = useState(true);
 
@@ -54,7 +61,7 @@ export default function HomePage() {
   const liveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const replayIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const activeState = replayPlaying && frames.length > 0 ? frames[Math.min(replayIndex, frames.length - 1)].state : state;
+  const activeState = replayActive && frames.length > 0 ? frames[Math.min(replayIndex, frames.length - 1)].state : state;
 
   useEffect(() => { stateRef.current = state; }, [state]);
 
@@ -62,8 +69,9 @@ export default function HomePage() {
     const boot = async () => {
       try {
         setErrorMessage(null);
-        const live = await fetchState();
+        const [live, agents] = await Promise.all([fetchState(), fetchAgents()]);
         setState(live);
+        setAgentOptions(agents.agents);
         stateRef.current = live;
         setTimeline([{
           turn: live.step, reward: 0, risk: live.network_risk,
@@ -85,7 +93,7 @@ export default function HomePage() {
     }
     liveIntervalRef.current = setInterval(() => { void runLiveStep(); }, 1050);
     return () => { if (liveIntervalRef.current) clearInterval(liveIntervalRef.current); liveIntervalRef.current = null; };
-  }, [running, busy, scenario, difficulty, attacker, strategyMode]);
+  }, [running, busy]);
 
   useEffect(() => {
     if (!replayPlaying || frames.length <= 1) {
@@ -109,24 +117,7 @@ export default function HomePage() {
     try {
       setErrorMessage(null);
       const result = await step();
-      const prev = stateRef.current;
-      const resolvedState: EnvState = {
-        episode_id: result.episode_id, step: prev.step + 1, network_risk: result.network_risk,
-        risk_breakdown: result.risk_breakdown, assets: result.assets, last_action: result.action_name,
-        red_log: result.red_log, profile: result.profile, intelligence: result.intelligence,
-        events: result.events, narrative: result.narrative, termination_reason: result.termination_reason,
-      };
-      stateRef.current = resolvedState;
-      setState(resolvedState);
-      setActiveAgentLabel(result.active_agent ?? AGENT_LABELS[actionSource] ?? "Historical PPO Defender");
-      setIncidents((p) => [incidentLine(resolvedState, result), ...p].slice(0, 50));
-      setTimeline((p) => [...p, {
-        turn: resolvedState.step, reward: result.reward, risk: result.network_risk,
-        uptime: uptimeFromAssets(result.assets), breaches: breachesFromAssets(result.assets),
-        securityScore: securityScore(result.network_risk),
-      }].slice(-200));
-      setFrames((p) => [...p, { turn: resolvedState.step, state: resolvedState, result, timestamp: Date.now() }].slice(-250));
-      if (result.terminated || result.truncated) setRunning(false);
+      applyStepResult(result);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Step request failed.");
       if (err instanceof Error && isBackendReachabilityError(err)) {
@@ -136,8 +127,37 @@ export default function HomePage() {
     } finally { setBusy(false); }
   };
 
-  const handleReset = async () => {
-    setRunning(false); setReplayPlaying(false);
+  const applyStepResult = (result: StepResult) => {
+    const resolvedState: EnvState = {
+      episode_id: result.episode_id, step: result.step, network_risk: result.network_risk,
+      risk_breakdown: result.risk_breakdown, assets: result.assets, last_action: result.action_name,
+      red_log: result.red_log, profile: result.profile, intelligence: result.intelligence,
+      events: result.events, alerts: result.alerts, narrative: result.narrative,
+      termination_reason: result.termination_reason,
+    };
+    stateRef.current = resolvedState;
+    setState(resolvedState);
+    setLatestResult(result);
+    setEpisodeReady(true);
+    setEpisodeHasRun(true);
+    setReplayPlaying(false);
+    setReplayActive(false);
+    setActiveAgentLabel(result.active_agent ?? formatAgentLabel(result.action_source));
+    setIncidents((previous) => [incidentLine(resolvedState, result), ...previous].slice(0, 50));
+    setTimeline((previous) => [...previous, {
+      turn: result.step, reward: result.reward, risk: result.network_risk,
+      uptime: uptimeFromAssets(result.assets), breaches: breachesFromAssets(result.assets),
+      securityScore: securityScore(result.network_risk),
+    }].slice(-200));
+    setFrames((previous) => {
+      const next = [...previous, { turn: result.step, state: resolvedState, result, timestamp: Date.now() }].slice(-250);
+      setReplayIndex(Math.max(0, next.length - 1));
+      return next;
+    });
+    if (result.terminated || result.truncated) setRunning(false);
+  };
+
+  const resetCurrentConfiguration = async (): Promise<boolean> => {
     try {
       setErrorMessage(null);
       const synced = await resetSimulation({
@@ -147,39 +167,56 @@ export default function HomePage() {
       setState(synced); stateRef.current = synced; setIncidents([]);
       setTimeline([{ turn: synced.step, reward: 0, risk: synced.network_risk, uptime: uptimeFromAssets(synced.assets), breaches: breachesFromAssets(synced.assets), securityScore: securityScore(synced.network_risk) }]);
       setFrames([]); setReplayIndex(0);
-      setActiveAgentLabel(AGENT_LABELS[actionSource] ?? "Historical PPO Defender");
+      setReplayActive(false); setReplayPlaying(false); setLatestResult(null);
+      setEpisodeReady(true); setEpisodeHasRun(false);
+      setActiveAgentLabel(`Configured: ${formatAgentLabel(actionSource)}`);
+      return true;
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Reset request failed.");
       if (err instanceof Error && isBackendReachabilityError(err)) {
         setActiveAgentLabel("Backend Offline");
       }
+      setEpisodeReady(false);
+      return false;
     }
+  };
+
+  const handleReset = async () => {
+    setRunning(false);
+    await resetCurrentConfiguration();
   };
 
   const handleStartPause = async () => {
     if (running) { setRunning(false); return; }
+    const completed = Boolean(latestResult?.terminated || latestResult?.truncated);
+    const ready = episodeReady && !completed ? true : await resetCurrentConfiguration();
+    if (ready) setRunning(true);
+  };
+
+  const handleManualAction = async (actionName: string, actionId: number) => {
+    if (!episodeReady || running || busy || latestResult?.terminated || latestResult?.truncated) return;
+    setBusy(true);
     try {
       setErrorMessage(null);
-      const synced = await resetSimulation({
-        seed: 42, scenario, difficulty, attacker, strategy_mode: strategyMode,
-        action_source: actionSource, intelligence_enabled: true,
-      });
-      setState(synced); stateRef.current = synced; setIncidents([]);
-      setTimeline([{ turn: synced.step, reward: 0, risk: synced.network_risk, uptime: uptimeFromAssets(synced.assets), breaches: breachesFromAssets(synced.assets), securityScore: securityScore(synced.network_risk) }]);
-      setFrames([]); setReplayIndex(0);
-      setActiveAgentLabel(AGENT_LABELS[actionSource] ?? "Historical PPO Defender");
-      setRunning(true);
+      applyStepResult(await stepWithActionName(actionName, actionId));
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : "Unable to start simulation.");
-      if (err instanceof Error && isBackendReachabilityError(err)) {
-        setActiveAgentLabel("Backend Offline");
-      }
+      setErrorMessage(err instanceof Error ? err.message : "Manual action failed.");
+    } finally {
+      setBusy(false);
     }
   };
 
-  const currentConfidence = activeState.intelligence?.reasoning?.decision_confidence ?? 0;
+  const markConfigurationPending = () => {
+    setEpisodeReady(false);
+    setEpisodeHasRun(false);
+    setLatestResult(null);
+    setActiveAgentLabel("Configuration pending reset");
+  };
+
   const security = useMemo(() => securityScore(activeState.network_risk), [activeState.network_risk]);
   const underAttack = Boolean(activeState.red_log?.attack && activeState.red_log?.attack !== "no_attack");
+  const completed = Boolean(latestResult?.terminated || latestResult?.truncated);
+  const startLabel = running ? "Pause" : episodeReady && episodeHasRun && !completed ? "Resume" : "Start";
 
   return (
     <main className="relative min-h-screen bg-[#050508] text-white/90">
@@ -189,9 +226,13 @@ export default function HomePage() {
 
       <Topbar
         scenario={scenario} difficulty={difficulty} attacker={attacker} strategyMode={strategyMode}
-        actionSource={actionSource} activeAgentLabel={activeAgentLabel} running={running}
-        onScenarioChange={setScenario} onDifficultyChange={setDifficulty} onAttackerChange={setAttacker}
-        onStrategyChange={setStrategyMode} onActionSourceChange={setActionSource}
+        actionSource={actionSource} agentOptions={agentOptions} activeAgentLabel={activeAgentLabel}
+        running={running} busy={busy} configLocked={running} startLabel={startLabel}
+        onScenarioChange={(value) => { setScenario(value); markConfigurationPending(); }}
+        onDifficultyChange={(value) => { setDifficulty(value); markConfigurationPending(); }}
+        onAttackerChange={(value) => { setAttacker(value); markConfigurationPending(); }}
+        onStrategyChange={(value) => { setStrategyMode(value); markConfigurationPending(); }}
+        onActionSourceChange={(value) => { setActionSource(value); markConfigurationPending(); }}
         onStartPause={() => void handleStartPause()} onReset={() => void handleReset()}
       />
 
@@ -215,18 +256,25 @@ export default function HomePage() {
         {/* ── Hero section: headline + key stats ──────────────────── */}
         <section className="flex flex-col gap-2 pb-2">
           <h2 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">
-            Autonomous Cyber Defense
+            Cyber-Defense Policy Simulator
           </h2>
           <p className="max-w-2xl text-sm leading-relaxed text-white/40">
-            Real-time AI-driven threat detection, response orchestration, and blue-team policy optimization across your simulated enterprise network.
+            Experimental BLUE policy execution and evaluation against configurable automated RED behavior in a simulated enterprise network.
           </p>
           <div className="mt-3 flex flex-wrap gap-4">
             <StatPill label="Turn" value={String(activeState.step)} />
             <StatPill label="Risk" value={activeState.network_risk.toFixed(3)} />
             <StatPill label="Score" value={`${security}`} />
-            <StatPill label="Confidence" value={`${Math.round(currentConfidence * 100)}%`} />
+            <StatPill label="Episode" value={completed ? "Complete" : running ? "Running" : episodeReady ? "Ready" : "Pending"} />
           </div>
         </section>
+
+        <ActionControls
+          latestResult={latestResult}
+          manualEnabled={episodeReady && !running && !completed}
+          busy={busy}
+          onManualAction={(actionName, actionId) => void handleManualAction(actionName, actionId)}
+        />
 
         {/* ── Main grid ───────────────────────────────────────────── */}
         <motion.section
@@ -246,7 +294,7 @@ export default function HomePage() {
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <p className="dt-label">Network Operations</p>
-                  <h3 className="mt-1 text-lg font-semibold text-white">Live Battlefield</h3>
+                  <h3 className="mt-1 text-lg font-semibold text-white">Simulated Network Episode</h3>
                 </div>
                 <motion.div
                   animate={underAttack ? { boxShadow: ["0 0 0 rgba(248,113,113,0)", "0 0 24px rgba(240,100,48,0.4)", "0 0 0 rgba(248,113,113,0)"] } : {}}
@@ -292,9 +340,9 @@ export default function HomePage() {
             <ReplayControls
               playing={replayPlaying} speed={replaySpeed}
               canStepBack={replayIndex > 0} canStepForward={replayIndex < frames.length - 1}
-              onPlayPause={() => setReplayPlaying((v) => !v)}
-              onStepBack={() => setReplayIndex((idx) => Math.max(0, idx - 1))}
-              onStepForward={() => setReplayIndex((idx) => Math.min(frames.length - 1, idx + 1))}
+              onPlayPause={() => { if (frames.length) { setReplayActive(true); setReplayPlaying((value) => !value); } }}
+              onStepBack={() => { setReplayActive(true); setReplayPlaying(false); setReplayIndex((idx) => Math.max(0, idx - 1)); }}
+              onStepForward={() => { setReplayActive(true); setReplayPlaying(false); setReplayIndex((idx) => Math.min(frames.length - 1, idx + 1)); }}
               onSpeedChange={setReplaySpeed}
             />
           </div>
@@ -364,9 +412,26 @@ function isBackendReachabilityError(err: Error): boolean {
   return err.message.includes("Cannot reach backend") || err.message.includes("API timeout");
 }
 
-const AGENT_LABELS: Record<string, string> = {
-  ppo_historical_checkpoint: "Historical PPO Defender",
-  qwen_rl: "Qwen RL Constrained Policy",
-  hybrid_router: "PPO/Qwen Hybrid Router",
+const AGENT_LABELS: Record<ActionSource | "manual", string> = {
   random: "Random Baseline",
+  heuristic: "Heuristic Baseline",
+  ppo_historical_checkpoint: "Historical PPO",
+  ppo_fresh_checkpoint: "Fresh PPO",
+  qwen_rl: "Qwen RL Policy",
+  hybrid_router: "Hybrid Router",
+  manual: "Manual Defender",
 };
+
+const INITIAL_AGENT_OPTIONS: AgentAvailability[] = (Object.keys(AGENT_LABELS) as Array<ActionSource | "manual">)
+  .filter((identity): identity is ActionSource => identity !== "manual")
+  .map((identity) => ({
+    identity,
+    authoritative_benchmark: true,
+    live_selectable: identity === "random",
+    available: identity === "random",
+    reason: identity === "random" ? null : "availability metadata is loading",
+  }));
+
+function formatAgentLabel(source: ActionSource | "manual"): string {
+  return AGENT_LABELS[source] ?? source;
+}

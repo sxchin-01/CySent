@@ -1,7 +1,27 @@
 export type PostureLevel = "healthy" | "guarded" | "elevated" | "critical";
 
 export type StrategyMode = "conservative" | "balanced" | "aggressive";
-export type ActionSource = "ppo_historical_checkpoint" | "qwen_rl" | "hybrid_router" | "random";
+export type ActionSource =
+  | "random"
+  | "heuristic"
+  | "ppo_historical_checkpoint"
+  | "ppo_fresh_checkpoint"
+  | "qwen_rl"
+  | "hybrid_router";
+
+export type AgentAvailability = {
+  identity: ActionSource;
+  authoritative_benchmark: boolean;
+  live_selectable: boolean;
+  available: boolean;
+  reason: string | null;
+};
+
+export type AgentsResponse = {
+  agents: AgentAvailability[];
+  legacy_compatibility_identity: string;
+  artifact_manifest: Record<string, unknown>;
+};
 
 export type AssetState = {
   name: string;
@@ -88,6 +108,7 @@ export type IntelligencePayload = {
 
 export type StepResult = {
   episode_id: string;
+  step: number;
   reward: number;
   terminated: boolean;
   truncated: boolean;
@@ -95,6 +116,7 @@ export type StepResult = {
   selected_action?: number;
   selected_action_name?: string;
   active_agent?: string;
+  action_source: ActionSource | "manual";
   action_mode?: "manual" | "autonomous";
   fallback_reason?: string | null;
   reward_breakdown?: Record<string, number>;
@@ -105,6 +127,7 @@ export type StepResult = {
   profile?: Record<string, unknown>;
   intelligence?: IntelligencePayload;
   events?: Array<Record<string, unknown>>;
+  alerts?: Array<Record<string, unknown>>;
   narrative?: string;
   metrics: Record<string, number>;
   termination_reason: string;
@@ -121,6 +144,7 @@ export type EnvState = {
   profile?: Record<string, unknown>;
   intelligence?: IntelligencePayload;
   events?: Array<Record<string, unknown>>;
+  alerts?: Array<Record<string, unknown>>;
   narrative?: string;
   termination_reason: string;
 };

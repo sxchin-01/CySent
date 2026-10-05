@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.agents import AgentRouter
+from backend.agents.qwen_rl_policy import QWEN_RL_SOURCE_ID
 from backend.agents.identities import (
     CANONICAL_RESEARCH_AGENTS,
     FRESH_PPO_AGENT,
@@ -139,6 +140,7 @@ class CySentRuntime:
                 "profile": self.last_info.get("profile", {}),
                 "intelligence": self.last_info.get("intelligence", {}),
                 "events": self.last_info.get("events", []),
+                "alerts": self.last_info.get("alerts", []),
                 "narrative": self.last_info.get("narrative", ""),
                 "termination_reason": self.last_info.get("termination_reason", "active"),
             }
@@ -202,6 +204,7 @@ def _execute_action(
     action: int,
     *,
     active_agent: str,
+    action_source: str,
     action_mode: str,
 ) -> Dict[str, Any]:
     if rt.episode_done:
@@ -228,6 +231,7 @@ def _execute_action(
     rt.last_info = info
     return {
         "episode_id": rt.current_episode_id,
+        "step": int(info.get("step", rt.env.current_step)),
         "reward": float(reward),
         "terminated": terminated,
         "truncated": truncated,
@@ -235,6 +239,7 @@ def _execute_action(
         "selected_action": info.get("selected_action"),
         "selected_action_name": info.get("selected_action_name"),
         "active_agent": info.get("active_agent"),
+        "action_source": action_source,
         "action_mode": info.get("action_mode"),
         "network_risk": info["network_risk"],
         "risk_breakdown": info.get("risk_breakdown", {}),
@@ -243,6 +248,7 @@ def _execute_action(
         "profile": info.get("profile", {}),
         "intelligence": info.get("intelligence", {}),
         "events": info.get("events", []),
+        "alerts": info.get("alerts", []),
         "narrative": info.get("narrative", ""),
         "metrics": info["metrics"],
         "reward_breakdown": info.get("reward_breakdown", {}),
@@ -266,20 +272,36 @@ def get_agents(request: Request) -> Dict[str, Any]:
     rt = _get_runtime(request)
     live_supported = {RANDOM_AGENT, HISTORICAL_PPO_AGENT, QWEN_RL_AGENT, HYBRID_AGENT}
     agents = []
+    availability = {
+        identity: bool(identity in live_supported and rt.agent_router.is_agent_available(identity))
+        for identity in CANONICAL_RESEARCH_AGENTS
+    }
     for identity in CANONICAL_RESEARCH_AGENTS:
         selectable = identity in live_supported
+        available = availability[identity]
+        if identity in {HEURISTIC_AGENT, FRESH_PPO_AGENT}:
+            reason = "benchmark-only; not available as a live demo agent"
+        elif available:
+            reason = None
+        elif identity == HISTORICAL_PPO_AGENT:
+            reason = "verified Historical PPO checkpoint is unavailable"
+        elif identity == QWEN_RL_AGENT:
+            reason = "verified immutable Qwen snapshot is unavailable"
+        elif identity == HYBRID_AGENT:
+            missing = []
+            if not availability[HISTORICAL_PPO_AGENT]:
+                missing.append("Historical PPO")
+            if not availability[QWEN_RL_AGENT]:
+                missing.append("Qwen RL")
+            reason = f"required dependencies unavailable: {', '.join(missing)}"
+        else:
+            reason = "agent is unavailable"
         agents.append({
             "identity": identity,
             "authoritative_benchmark": True,
             "live_selectable": selectable,
-            "available": bool(selectable and rt.agent_router.is_agent_available(identity)),
-            "reason": (
-                None
-                if selectable and rt.agent_router.is_agent_available(identity)
-                else "benchmark-only in P4"
-                if identity in {HEURISTIC_AGENT, FRESH_PPO_AGENT}
-                else "required local artifact is unavailable"
-            ),
+            "available": available,
+            "reason": reason,
         })
     return {
         "agents": agents,
@@ -342,6 +364,7 @@ def reset(req: ResetRequest, request: Request) -> Dict[str, Any]:
             "profile": info.get("profile", {}),
             "intelligence": info.get("intelligence", {}),
             "events": info.get("events", []),
+            "alerts": info.get("alerts", []),
             "narrative": info.get("narrative", ""),
             "termination_reason": info.get("termination_reason", "active"),
         }
@@ -402,6 +425,11 @@ def step(request: Request) -> Dict[str, Any]:
             rt,
             action,
             active_agent=rt.agent_router.get_active_agent_name(),
+            action_source=(
+                QWEN_RL_AGENT
+                if rt.agent_router.last_used_agent == QWEN_RL_SOURCE_ID
+                else rt.agent_router.last_used_agent
+            ),
             action_mode="autonomous",
         )
         response["fallback_reason"] = rt.agent_router.last_fallback_reason
@@ -427,6 +455,7 @@ def step_manual(req: StepRequest, request: Request) -> Dict[str, Any]:
             rt,
             req.action,
             active_agent="Manual Defender",
+            action_source="manual",
             action_mode="manual",
         )
 

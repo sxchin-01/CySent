@@ -22,8 +22,8 @@ export function AICommander({ intelligence, strategyMode }: AICommanderProps) {
     <section className="dt-panel relative flex h-[560px] flex-col overflow-hidden p-5">
       <header className="mb-5 flex items-center justify-between">
         <div>
-          <p className="dt-label text-orange-400/60">AI Command Center</p>
-          <h3 className="mt-1 text-lg font-semibold text-white">Blue Decision Core</h3>
+          <p className="dt-label text-orange-400/60">Deterministic Analysis</p>
+          <h3 className="mt-1 text-lg font-semibold text-white">Simulation Advisory</h3>
         </div>
         <span className="rounded-full bg-white/[0.05] px-3 py-1 text-[10px] uppercase tracking-[0.12em] font-medium text-white/40">
           {strategyMode}
@@ -36,20 +36,20 @@ export function AICommander({ intelligence, strategyMode }: AICommanderProps) {
         variants={{ hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.08, delayChildren: 0.06 } } }}
         className="flex flex-1 flex-col gap-3 overflow-y-auto"
       >
-        {/* Recommended Action */}
+        {/* Deterministic advisory action, separate from the selected policy. */}
         <motion.div
           variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }}
           className="dt-tile p-4"
         >
-          <p className="dt-label">Recommended Action</p>
+          <p className="dt-label">Advisory Action</p>
           <p className="mt-2 text-xl font-bold text-white">{formatAction(recommendation?.recommended_action_name)}</p>
-          <p className="mt-1 text-xs text-white/35">{recommendation?.rationale ?? "AI recommendation updates every turn."}</p>
+          <p className="mt-1 text-xs text-white/35">{recommendation?.rationale ?? "Deterministic advisory updates after each turn."}</p>
         </motion.div>
 
-        {/* Confidence + Posture */}
+        {/* Handcrafted signal score and simulation posture. */}
         <motion.div variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }} className="grid grid-cols-2 gap-3">
           <div className="dt-tile flex flex-col items-center p-4">
-            <p className="dt-label self-start text-orange-400/50">Confidence</p>
+            <p className="dt-label self-start text-orange-400/50">Signal Score</p>
             <RadialConfidence percent={confidencePct} />
           </div>
           <div className="dt-tile p-4">
@@ -59,16 +59,16 @@ export function AICommander({ intelligence, strategyMode }: AICommanderProps) {
           </div>
         </motion.div>
 
-        {/* Threat Forecast */}
+        {/* Normalized deterministic threat signal, not a calibrated forecast. */}
         <motion.div variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }} className="dt-tile p-4">
-          <p className="dt-label text-cyan-400/50">Threat Forecast</p>
+          <p className="dt-label text-cyan-400/50">Threat Forecast Signal</p>
           <div className="mt-3 flex flex-wrap gap-1.5">
             {(forecast?.top_predictions ?? []).slice(0, 4).map((item) => (
               <span
                 key={`${item.attack}-${item.probability}`}
                 className="rounded-full bg-white/[0.05] px-3 py-1 text-[11px] font-medium text-white/60"
               >
-                {item.attack} <span className="text-orange-400/80">{Math.round(item.probability * 100)}%</span>
+                {item.attack} <span className="text-orange-400/80">score {item.probability.toFixed(2)}</span>
               </span>
             ))}
             {!forecast?.top_predictions?.length && (
@@ -77,11 +77,11 @@ export function AICommander({ intelligence, strategyMode }: AICommanderProps) {
           </div>
         </motion.div>
 
-        {/* Why This Action */}
+        {/* Deterministic context for the executed action. */}
         <motion.div variants={{ hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0 } }} className="dt-tile p-4">
-          <p className="dt-label">Why This Action</p>
+          <p className="dt-label">Executed Action Context</p>
           <p className="mt-2 line-clamp-6 text-sm leading-relaxed text-white/50">
-            {reasoning?.explanation ?? "Reasoning context appears once the simulation executes the first action."}
+            {reasoning?.explanation ?? "Simulation context appears once the first action executes."}
           </p>
         </motion.div>
       </motion.div>

@@ -279,6 +279,7 @@ class ApiCorrectnessTests(unittest.TestCase):
         disable_red(env)
         router = Mock()
         router.last_fallback_reason = None
+        router.last_used_agent = HISTORICAL_PPO_AGENT
         router.get_active_agent_name.return_value = "Test PPO Defender"
         rt = SimpleNamespace(
             env=env,
@@ -320,7 +321,10 @@ class ApiCorrectnessTests(unittest.TestCase):
         with patch.object(api, "_get_runtime", return_value=rt):
             result = api.step_manual(api.StepRequest(action=4, action_name="rotate_credentials"), Mock())
             self.assertEqual(result["action_mode"], "manual")
+            self.assertEqual(result["action_source"], "manual")
+            self.assertEqual(result["step"], 1)
             self.assertEqual(result["action_name"], "rotate_credentials")
+            self.assertEqual(result["selected_action_name"], "rotate_credentials")
             self.assertEqual(result["active_agent"], "Manual Defender")
             rt.agent_router.predict_action.assert_not_called()
 
@@ -354,8 +358,18 @@ class ApiCorrectnessTests(unittest.TestCase):
         with patch.object(api, "_get_runtime", return_value=rt):
             result = api.step(Mock())
         self.assertEqual(result["action_mode"], "autonomous")
+        self.assertEqual(result["action_source"], HISTORICAL_PPO_AGENT)
+        self.assertEqual(result["step"], 1)
         self.assertEqual(result["action_name"], "increase_monitoring")
+        self.assertEqual(result["selected_action_name"], "increase_monitoring")
         rt.agent_router.predict_action.assert_called_once()
+
+        qwen_rt = self.make_runtime()
+        qwen_rt.agent_router.predict_action.return_value = 6
+        qwen_rt.agent_router.last_used_agent = QWEN_RL_SOURCE_ID
+        with patch.object(api, "_get_runtime", return_value=qwen_rt):
+            qwen_result = api.step(Mock())
+        self.assertEqual(qwen_result["action_source"], QWEN_RL_AGENT)
 
         failed_rt = self.make_runtime()
         failed_rt.agent_router.predict_action.side_effect = RuntimeError("model failed")
@@ -367,13 +381,17 @@ class ApiCorrectnessTests(unittest.TestCase):
 
     def test_terminal_episode_remains_consistent_until_reset(self) -> None:
         rt = self.make_runtime(max_steps=1)
-        result = api._execute_action(rt, 0, active_agent="Manual Defender", action_mode="manual")
+        result = api._execute_action(
+            rt, 0, active_agent="Manual Defender", action_source="manual", action_mode="manual"
+        )
         self.assertTrue(result["truncated"])
         self.assertEqual(result["episode_id"], "episode-test")
         self.assertTrue(rt.episode_done)
         self.assertEqual(rt.last_info["step"], 1)
         with self.assertRaises(HTTPException) as complete:
-            api._execute_action(rt, 0, active_agent="Manual Defender", action_mode="manual")
+            api._execute_action(
+                rt, 0, active_agent="Manual Defender", action_source="manual", action_mode="manual"
+            )
         self.assertEqual(complete.exception.status_code, 409)
 
 

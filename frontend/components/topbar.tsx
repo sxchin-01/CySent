@@ -3,7 +3,7 @@
 import { motion } from "framer-motion";
 import { Pause, Play, RotateCcw, Shield, Cpu, Brain, Shuffle, GitMerge } from "lucide-react";
 
-import { ActionSource, StrategyMode } from "@/lib/types";
+import { ActionSource, AgentAvailability, StrategyMode } from "@/lib/types";
 
 type TopbarProps = {
   scenario: string;
@@ -11,8 +11,12 @@ type TopbarProps = {
   attacker: string;
   strategyMode: StrategyMode;
   actionSource: ActionSource;
+  agentOptions: AgentAvailability[];
   activeAgentLabel: string;
   running: boolean;
+  busy: boolean;
+  configLocked: boolean;
+  startLabel: "Start" | "Pause" | "Resume";
   onScenarioChange: (value: string) => void;
   onDifficultyChange: (value: string) => void;
   onAttackerChange: (value: string) => void;
@@ -22,21 +26,37 @@ type TopbarProps = {
   onReset: () => void;
 };
 
-const SCENARIOS = ["bank", "hospital", "saas", "government", "manufacturing"];
-const DIFFICULTIES = ["easy", "medium", "hard"];
-const ATTACKERS = ["ransomware_gang", "credential_thief", "silent_apt", "insider_saboteur", "botnet"];
+const SCENARIOS = ["bank", "hospital", "saas", "government", "manufacturing"].map(toOption);
+const DIFFICULTIES = ["easy", "medium", "hard"].map(toOption);
+const ATTACKERS = ["ransomware_gang", "credential_thief", "silent_apt", "insider_saboteur", "botnet"].map(toOption);
 const STRATEGIES: StrategyMode[] = ["conservative", "balanced", "aggressive"];
-const AGENTS: ActionSource[] = ["ppo_historical_checkpoint", "qwen_rl", "hybrid_router", "random"];
+
+const AGENT_LABELS: Record<ActionSource, string> = {
+  random: "Random Baseline",
+  heuristic: "Heuristic Baseline",
+  ppo_historical_checkpoint: "Historical PPO",
+  ppo_fresh_checkpoint: "Fresh PPO",
+  qwen_rl: "Qwen RL Policy",
+  hybrid_router: "Hybrid Router",
+};
 
 const AGENT_ICON: Record<string, typeof Cpu> = {
   ppo_historical_checkpoint: Cpu,
+  ppo_fresh_checkpoint: Cpu,
   qwen_rl: Brain,
   hybrid_router: GitMerge,
   random: Shuffle,
+  heuristic: Cpu,
 };
 
 export function Topbar(props: TopbarProps) {
   const AgentIcon = AGENT_ICON[props.actionSource] ?? Cpu;
+  const agentOptions = props.agentOptions.map((agent) => ({
+    value: agent.identity,
+    label: `${AGENT_LABELS[agent.identity]}${agent.live_selectable ? (agent.available ? "" : " - unavailable") : " - benchmark only"}`,
+    disabled: !agent.live_selectable || !agent.available,
+    title: agent.reason ?? undefined,
+  }));
 
   return (
     <motion.header
@@ -58,29 +78,31 @@ export function Topbar(props: TopbarProps) {
 
         {/* Controls row */}
         <div className="flex flex-wrap items-center gap-2">
-          <Select label="Scenario" value={props.scenario} options={SCENARIOS} onChange={props.onScenarioChange} />
-          <Select label="Difficulty" value={props.difficulty} options={DIFFICULTIES} onChange={props.onDifficultyChange} />
-          <Select label="Attacker" value={props.attacker} options={ATTACKERS} onChange={props.onAttackerChange} />
+          <Select label="Scenario" value={props.scenario} options={SCENARIOS} disabled={props.configLocked} onChange={props.onScenarioChange} />
+          <Select label="Difficulty" value={props.difficulty} options={DIFFICULTIES} disabled={props.configLocked} onChange={props.onDifficultyChange} />
+          <Select label="Attacker" value={props.attacker} options={ATTACKERS} disabled={props.configLocked} onChange={props.onAttackerChange} />
           <Select
-            label="Strategy"
+            label="Advisory"
             value={props.strategyMode}
-            options={STRATEGIES}
+            options={STRATEGIES.map(toOption)}
+            disabled={props.configLocked}
             onChange={(v) => props.onStrategyChange(v as StrategyMode)}
           />
           <Select
             label="Agent"
             value={props.actionSource}
-            options={AGENTS}
+            options={agentOptions}
+            disabled={props.configLocked}
             onChange={(v) => props.onActionSourceChange(v as ActionSource)}
           />
 
           <div className="ml-1 h-5 w-px bg-white/[0.06]" />
 
-          <button onClick={props.onStartPause} className="dt-btn-primary">
+          <button onClick={props.onStartPause} disabled={props.busy} className="dt-btn-primary disabled:cursor-not-allowed disabled:opacity-40">
             {props.running ? <Pause size={14} /> : <Play size={14} />}
-            {props.running ? "Pause" : "Start Sim"}
+            {props.startLabel}
           </button>
-          <button onClick={props.onReset} className="dt-btn-ghost">
+          <button onClick={props.onReset} disabled={props.busy} className="dt-btn-ghost disabled:cursor-not-allowed disabled:opacity-40">
             <RotateCcw size={13} />
             Reset
           </button>
@@ -100,23 +122,36 @@ export function Topbar(props: TopbarProps) {
 type SelectProps = {
   label: string;
   value: string;
-  options: readonly string[];
+  options: readonly SelectOption[];
+  disabled?: boolean;
   onChange: (value: string) => void;
 };
 
-function Select({ label, value, options, onChange }: SelectProps) {
+type SelectOption = {
+  value: string;
+  label: string;
+  disabled?: boolean;
+  title?: string;
+};
+
+function Select({ label, value, options, disabled = false, onChange }: SelectProps) {
   return (
     <label className="dt-select">
       <span className="text-[9px] font-medium uppercase tracking-[0.1em] text-white/30">{label}</span>
       <select
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
-        className="bg-transparent text-[12px] font-medium text-white/80 outline-none"
+        className="bg-transparent text-[12px] font-medium text-white/80 outline-none disabled:cursor-not-allowed disabled:text-white/30"
       >
         {options.map((o) => (
-          <option key={o} value={o}>{o}</option>
+          <option key={o.value} value={o.value} disabled={o.disabled} title={o.title}>{o.label}</option>
         ))}
       </select>
     </label>
   );
+}
+
+function toOption(value: string): SelectOption {
+  return { value, label: value.replaceAll("_", " ") };
 }
